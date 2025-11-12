@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UCDP GED Scenario Dashboard | CSC_51052</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+
+    <script src="main.js" defer></script>
+</head>
+<body>
+
+    <h1>Global Event Dataset Dashboard</h1>
+
+    <div class="filters">
+        <div>
+            <label for="regionSelect">Region:</label>
+            <select id="regionSelect"></select>
+        </div>
+
+        <div>
+            <label for="actor1Select">Actor 1:</label>
+            <select id="actor1Select" disabled></select>
+        </div>
+        <div>
+            <label for="actor2Select">Opponent (Actor 2):</label>
+            <select id="actor2Select" disabled></select>
+        </div>
+        <div>
+            <label for="yearSelect">Year:</label>
+            <select id="yearSelect" disabled></select>
+        </div>
+        <div>
+            <label for="typeSelect">Violence Type:</label>
+            <select id="typeSelect" disabled></select>
+        </div>
+    </div>
+
+    <div id="dashboard"></div>
+
+</body>
+</html>

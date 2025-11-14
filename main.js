@@ -85,1035 +85,1359 @@ function initFilters() {
     document.getElementById("typeSelect").addEventListener("change", renderDashboard);
 }
 
-// Function to manage filter changes and dependencies
-function handleFilterChange(event) {
-    const changedId = event.target.id;
-    
-    if (changedId === "regionSelect") {
-        updateDependentFiltersByRegion();
-    } 
-    else if (changedId === "actor1Select") {
-        updateDependentFiltersByActor();
-    } else {
-        renderDashboard();
-    }
+/** Toggle Region state (used for all Charts) */
+function toggleRegion(event, regionName) {
+    const item = d3.select(event.currentTarget);
+    const isActive = item.classed("active");
+    const allRegionsKeys = Object.keys(REGION_COLORS);
+    
+    if (currentChart === 'chart3') {
+        if (regionName === 'Global') {
+            if (!isActive || activeRegions.length > 1) {
+                activeRegions = ['Global']; 
+            } else {
+                return;
+            }
+        } else {
+            if (activeRegions.includes('Global')) {
+                activeRegions = activeRegions.filter(r => r !== 'Global');
+            }
+
+            if (isActive) {
+                activeRegions = activeRegions.filter(r => r !== regionName);
+            } else {
+                activeRegions.push(regionName);
+            }
+            
+            if (activeRegions.length === 0) {
+                activeRegions = ['Global'];
+            }
+        }
+    } else {
+        if (isActive) {
+            activeRegions = activeRegions.filter(r => r !== regionName);
+        } else {
+            activeRegions.push(regionName);
+        }
+        
+        if (activeRegions.length === 0) {
+             activeRegions = allRegionsKeys; 
+        }
+    }
+    
+    d3.selectAll(".legend-item").classed("active", function() {
+        const region = d3.select(this).attr("data-region");
+        return activeRegions.includes(region);
+    });
+
+    // Reset detail panel state
+    d3.select("#detail-panel").classed("locked", false);
+    d3.select("#detail-panel").select('.panel-title').text('Detail Information');
+
+    switch (currentChart) {
+        case 'chart1': drawChart1(); break;
+        case 'chart2': drawChart2(); break;
+        case 'chart3': drawChart3(); break;
+        case 'chart4': drawChart4(); break;
+    }
+}
+
+/** Utility function to clean old elements (axes/headers) before drawing */
+function cleanChartArea() {
+    gChart.selectAll('.x-axis, .y-axis, .chart-header, .chart-title, .dot-group').remove();
+    gChart.selectAll('.bubble-group, .line-group, .chart-header-group').remove();
+}
+
+/** Update VICTIM_LABELS based on the most common Side A/B name (or generic labels if needed) */
+function getDynamicVictimLabels(countryDetail, useGenericLabels = false) {
+    if (useGenericLabels) {
+        return {
+            'deaths_a': 'Side A',
+            'deaths_b': 'Side B',
+            'deaths_civilians': 'Civilians (Collateral)',
+            'deaths_unknown': 'Unknown Status'
+        };
+    }
+    
+    let sideA = countryDetail.side_a_name || 'Side A';
+    let sideB = countryDetail.side_b_name || 'Side B';
+
+    if (countryDetail.detail && countryDetail.detail.length > 0) {
+        const event = countryDetail.detail.reduce((max, event) => 
+            (event.best > max.best ? event : max),
+            countryDetail.detail[0]
+        );
+        sideA = event.side_a || sideA;
+        sideB = event.side_b || sideB;
+    }
+    
+    const simplifyName = (name) => {
+        if (name === 'civilians') return 'Civilians (Targeted)';
+        if (name.length > 20) return name.substring(0, 17) + '...';
+        return name;
+    };
+
+    return {
+        'deaths_a': simplifyName(sideA),
+        'deaths_b': simplifyName(sideB),
+        'deaths_civilians': 'Civilians (Collateral)',
+        'deaths_unknown': 'Unknown Status'
+    };
 }
 
 
-function updateDependentFiltersByRegion() {
-    const selectedRegion = document.getElementById("regionSelect").value;
-    const actor1Select = document.getElementById("actor1Select");
-    const yearSelect = document.getElementById("yearSelect");
-    const typeSelect = document.getElementById("typeSelect");
-    const actor2Select = document.getElementById("actor2Select");
+/** Display full detail information on mouseover bubble (Chart 1, 2, 4) */
+function showFullDetail(d) {
+    
+    currentHoveredNode = d; 
+    const data = d.data || d;
+    
+    if (hoverTimeout) clearTimeout(hoverTimeout);
 
-    // Get current filter values to maintain selection if possible
-    const currentActor1 = actor1Select.value;
-    const currentYear = yearSelect.value;
-    const currentType = typeSelect.value;
+    const countryName = data.name.includes('(') ? data.name.split('(')[0].trim() : data.name; 
+    
+    let detailedDataForCharts = data.detail || [];
+    let aggregatedDataForDisplay = data; 
+    let isFilteredByViolenceType = false;
 
-    const isRegionSelected = selectedRegion !== "All";
+    if (currentChart === 'chart2' || currentChart === 'chart4') {
+        const typeOfViolenceHovered = data.type_of_violence_name;
+        
+        if (typeOfViolenceHovered && typeOfViolenceHovered !== countryName) {
+            const filteredEvents = (data.detail || []).filter(e => e.type_of_violence_name === typeOfViolenceHovered);
+            
+            if (filteredEvents.length > 0) {
+                detailedDataForCharts = filteredEvents;
+                isFilteredByViolenceType = true;
+                
+                aggregatedDataForDisplay = {
+                    ...data,
+                    best: d3.sum(filteredEvents, e => e.best),
+                    events: filteredEvents.length,
+                    detail: filteredEvents,
+                };
+            }
+        }
+    }
+    
+    const isCountryChart = detailedDataForCharts.length > 0;
+    
+    let highestCasualtyEvent = { best: 0, dyad_name: 'N/A', year: '', data: null }; 
+    if (isCountryChart) {
+        highestCasualtyEvent = detailedDataForCharts.reduce((max, event) => 
+            (event.best > max.best ? { best: event.best, dyad_name: event.dyad_name || 'Unknown Dyad', year: event.year, data: event } : max),
+            highestCasualtyEvent
+        );
+    }
+    
+    // Calculate percentage 
+    const totalCasualtiesGlobal = d3.sum(rawProcessedData.filter(d => activeRegions.includes(d.region)), d => d.best);
+    const casualtyPercentOfGlobal = totalCasualtiesGlobal > 0 ? (aggregatedDataForDisplay.best / totalCasualtiesGlobal) : 0;
+    
+    // Find the Side A with the LARGEST EVENT in the country (for display)
+    let highestSideA = { name: 'N/A', events: 0, total_best: 0 };
+    if (isCountryChart) {
+           const sideATotals = d3.rollup(detailedDataForCharts, 
+                v => ({ 
+                    events: v.length,
+                    total_best: d3.sum(v, d => d.best)
+                }), 
+                d => d.side_a
+            );
+            // SORT BY EVENTS
+            highestSideA = Array.from(sideATotals).reduce((max, [name, values]) => 
+                (values.events > max.events ? { name: name, events: values.events, total_best: values.total_best } : max),
+                highestSideA
+            );
+    }
+    
+    const totalEventsCountry = aggregatedDataForDisplay.events || 0;
+    const sideAEventPercent = totalEventsCountry > 0 ? (highestSideA.events / totalEventsCountry) : 0;
+    const sideACasualtyPercent = aggregatedDataForDisplay.best > 0 ? (highestSideA.total_best / aggregatedDataForDisplay.best) : 0;
+
+
+    const victimLabelsForBarChart = getDynamicVictimLabels(highestCasualtyEvent.data ? {detail: [highestCasualtyEvent.data]} : aggregatedDataForDisplay, false);
+    const victimLabelsForStackedCharts = getDynamicVictimLabels(aggregatedDataForDisplay, true);
+
+
+    d3.select("#detail-panel").classed("locked", false);
+    
+    const totalEventsDisplay = d3.format(",")(aggregatedDataForDisplay.events || (detailedDataForCharts ? detailedDataForCharts.length : 1));
+    const totalCasualtiesDisplay = d3.format(",")(aggregatedDataForDisplay.best);
+    
+    const typeDisplay = isFilteredByViolenceType ? 
+                            `<p><strong>Violence Type:</strong> ${aggregatedDataForDisplay.type_of_violence_name}</p>` : 
+                            '';
+
+    // 1. Display basic information
+    d3.select(".detail-info-column").html(`
+        <p class="detail-name">${countryName}</p>
+        <p><strong>Continent:</strong> ${aggregatedDataForDisplay.region}</p>
+        <p><strong>Casualties:</strong> ${totalCasualtiesDisplay} <span style="font-weight: bold; color: #d62728;">(${d3.format(".1%")(casualtyPercentOfGlobal)} Total Region)</span></p>
+        <p><strong>Total Events:</strong> ${totalEventsDisplay}</p>
+        ${typeDisplay}
+        <hr style="border: 0.5px dashed #ccc; margin: 10px 0;">
+        <div id="highest-event-section">
+            <p style="font-weight: bold; margin-bottom: 5px;">Highest Casualty Event:</p>
+            <p style="margin-top: 0; margin-bottom: 5px;">
+                ${highestCasualtyEvent.dyad_name} (${d3.format(",")(highestCasualtyEvent.best)}${highestCasualtyEvent.year ? ', ' + highestCasualtyEvent.year : ''})
+            </p>
+            <div id="country-victim-breakdown-chart-container"></div> 
+        </div>
+        
+        <hr style="border: 0.5px dashed #ccc; margin: 10px 0;">
+        
+        <p style="font-weight: bold; margin-bottom: 5px;">Most Frequent Side A:</p>
+        <p style="margin-top: 0; font-size: 13px;">
+            ${highestSideA.name}
+            <br>Events participated: ${d3.format(",")(highestSideA.events)} <span style="font-weight: bold; color: #1f77b4;">(${d3.format(".1%")(sideAEventPercent)} Country Total)</span>
+            <br>Total Casualties (BEST): ${d3.format(",")(highestSideA.total_best)} <span style="font-weight: bold; color: #2ca02c;">(${d3.format(".1%")(sideACasualtyPercent)} Country Total)</span>
+        </p>
+        <hr style="border: 0.5px dashed #ccc; margin: 10px 0;">
+    `);
+
+    // 2. Clear old chart and add new container
+    const chartColumn = d3.select(".detail-chart-column").html('');
+    
+    // 3. Draw chart if there is detail data
+    if (isCountryChart) {
+        const typeCount = Array.from(d3.rollup(detailedDataForCharts, v => v.length, d => d.type_of_violence_name)).length;
+        const yearCount = Array.from(d3.rollup(detailedDataForCharts, v => v.length, d => d.year)).length;
+        
+        const showStackedAreaChart = yearCount >= 2 && detailedDataForCharts.length > 1; 
+        // Horizontal/Vertical Stacked Bar Chart only draws if there is more than 1 violence type (and data exists)
+        const showStackedBarChart = typeCount > 1; 
+
+        if (showStackedAreaChart) {
+            chartColumn.append('div').attr('id', 'country-stacked-area-chart-container');
+        }
+        
+        if (showStackedBarChart) {
+            chartColumn.append('div').attr('id', 'country-stacked-bar-chart-container');
+        }
+
+        const highestEventDataArray = highestCasualtyEvent.data ? [highestCasualtyEvent.data] : []; 
+
+        drawCountryCharts(
+            detailedDataForCharts, 
+            countryName, 
+            highestEventDataArray, 
+            showStackedAreaChart, 
+            showStackedBarChart, 
+            victimLabelsForStackedCharts, 
+            victimLabelsForBarChart 
+        );
+    }
+}
+
+
+/** Display full detail information on mouseover dot in Chart 3 */
+function showYearDetail(d, regionName) {
+    
+    currentHoveredNode = { 
+        data: { 
+            name: regionName, 
+            detail: [{ year: d.year, best: d.best }],
+            best: d.best 
+        } 
+    }; 
+    if (hoverTimeout) clearTimeout(hoverTimeout);
+    
+
+    // Raw data for the selected year and region
+    const detailedDataForCharts = rawProcessedData.filter(e => 
+        e.year === d.year && (regionName === 'Global' || e.region === regionName)
+    );
+    
+    // Total casualties and total events for the year/region
+    const totalCasualtiesYear = d.best;
+    const totalEventsYear = detailedDataForCharts.length;
+    
+    // Aggregate data for basic display
+    const aggregatedDataForDisplay = {
+        name: regionName,
+        region: regionName === 'Global' ? 'Multiple' : regionName,
+        best: totalCasualtiesYear,
+        events: totalEventsYear,
+        detail: detailedDataForCharts 
+    };
+
+    // 1. Find the highest casualty event
+    let highestCasualtyEvent = { best: 0, dyad_name: 'N/A', country: 'N/A', data: null };
+    // 2. Find the Side A with the MOST PARTICIPATED EVENTS in that year/region
+    let highestSideA = { name: 'N/A', events: 0, total_best: 0 };
+    
+    if (totalEventsYear > 0) {
+        highestCasualtyEvent = detailedDataForCharts.reduce((max, event) =>
+            (event.best > max.best ? { 
+                best: event.best, 
+                dyad_name: event.dyad_name || 'Unknown Dyad', 
+                country: event.country, 
+                data: event 
+            } : max),
+            highestCasualtyEvent
+        );
+        
+        // Calculate total 'best' casualties of Side A and total number of events participated
+        const sideATotals = d3.rollup(detailedDataForCharts, 
+            v => ({ 
+                events: v.length, // Number of events
+                total_best: d3.sum(v, d => d.best) // Total BEST casualties
+            }), 
+            d => d.side_a
+        );
+        
+        // SORT BY EVENTS (Number of conflicts)
+        highestSideA = Array.from(sideATotals).reduce((max, [name, values]) => 
+            (values.events > max.events ? { name: name, events: values.events, total_best: values.total_best } : max),
+            { name: 'N/A', events: 0, total_best: 0 }
+        );
+    }
+    
+    // --- Calculate Percentages ---
+    const casualtyPercentOfYear = totalCasualtiesYear > 0 ? (highestCasualtyEvent.best / totalCasualtiesYear) : 0;
+    const sideAEventPercent = totalEventsYear > 0 ? (highestSideA.events / totalEventsYear) : 0;
+    const sideACasualtyPercent = totalCasualtiesYear > 0 ? (highestSideA.total_best / totalCasualtiesYear) : 0;
+    
+    const totalCasualtiesDisplay = d3.format(",")(totalCasualtiesYear);
+    const totalEventsDisplay = d3.format(",")(totalEventsYear);
+    
+    // --- Update Detail Panel ---
+    
+    d3.select("#detail-panel").classed("locked", false);
+    
+    d3.select(".detail-info-column").html(`
+        <p class="detail-name">${regionName} (${d.year})</p>
+        <p><strong>Casualties:</strong> ${totalCasualtiesDisplay}</p>
+        <p><strong>Total Events:</strong> ${totalEventsDisplay}</p>
+        
+        <hr style="border: 0.5px dashed #ccc; margin: 10px 0;">
+        <div id="highest-event-section">
+            <p style="font-weight: bold; margin-bottom: 5px;">Most Severe Event:</p>
+            <p style="margin-top: 0; margin-bottom: 5px; font-size: 13px;">
+                ${highestCasualtyEvent.dyad_name} (${highestCasualtyEvent.country}) 
+                <br>Casualties: ${d3.format(",")(highestCasualtyEvent.best)} 
+                <span style="font-weight: bold; color: #d62728;">(${d3.format(".1%")(casualtyPercentOfYear)} Year Total)</span>
+            </p>
+            <div id="country-victim-breakdown-chart-container"></div> 
+        </div>
+        
+        <hr style="border: 0.5px dashed #ccc; margin: 10px 0;">
+        
+        <p style="font-weight: bold; margin-bottom: 5px;">Most Frequent Side A:</p>
+        <p style="margin-top: 0; font-size: 13px;">
+            ${highestSideA.name}
+            <br>Events participated: ${d3.format(",")(highestSideA.events)} 
+            <span style="font-weight: bold; color: #1f77b4;">(${d3.format(".1%")(sideAEventPercent)} Year Total)</span>
+            <br>Total Casualties (BEST): ${d3.format(",")(highestSideA.total_best)} 
+            <span style="font-weight: bold; color: #2ca02c;">(${d3.format(".1%")(sideACasualtyPercent)} Year Total)</span>
+        </p>
+
+        <hr style="border: 0.5px dashed #ccc; margin: 10px 0;">
+    `);
+
+    // 2. Clear old chart and add new container
+    const chartColumn = d3.select(".detail-chart-column").html('');
+    
+    // 3. Draw chart if there is detail data
+    if (totalEventsYear > 0) {
+        const typeCount = Array.from(d3.rollup(detailedDataForCharts, v => v.length, d => d.type_of_violence_name)).length;
+        
+        const highestEventDataArray = highestCasualtyEvent.data ? [highestCasualtyEvent.data] : []; 
+        
+        // Horizontal Bar chart only draws if > 1 violence type
+        if (typeCount > 1) {
+            chartColumn.append('div').attr('id', 'country-stacked-bar-chart-container');
+        } 
+
+        // drawCountryCharts function will be called to draw the highest event Bar Chart and Horizontal Stacked Bar Chart
+        drawCountryCharts(
+            detailedDataForCharts, 
+            regionName, 
+            highestEventDataArray, 
+            false, 
+            typeCount > 1, 
+            getDynamicVictimLabels(aggregatedDataForDisplay, true), 
+            getDynamicVictimLabels(highestCasualtyEvent.data ? {detail: [highestCasualtyEvent.data]} : aggregatedDataForDisplay, false) 
+        );
+    }
+}
+
+
+/** Hide detail information (on mouseout) */
+function hideDetail(event, d) {
     
-    // Logic 1: Reset everything to Global scope if Region is "All"
-    if (!isRegionSelected) {
-        // Reset lists to Global
-        fillSelect("actor1Select", MASTER_ACTOR_LIST);
-        fillSelect("yearSelect", FULL_YEAR_LIST);
-        fillSelect("actor2Select", ["All"]);
-        actor2Select.disabled = true;
+    // Xóa timeout cũ nếu có
+    if (hoverTimeout) clearTimeout(hoverTimeout);
 
-        const uniqueTypes = ["All", ...Array.from(new Set(RAW.map(d => d.type_of_violence))).filter(Boolean).sort()];
-        document.getElementById("typeSelect").innerHTML = uniqueTypes.map(v => {
-            const label = v === "All" ? "All" : TYPE_MAPPING[v] || `Unknown (${v})`;
-            return `<option value="${v}">${label}</option>`;
-        }).join("");
+    // Bắt đầu một timeout mới
+    hoverTimeout = setTimeout(() => {
+        const relatedTarget = event.relatedTarget;
         
-        // Disable dependent filters
-        actor1Select.disabled = true;
-        yearSelect.disabled = true;
-        typeSelect.disabled = true;
-        
-        // Reset values
-        actor1Select.value = "All";
-        yearSelect.value = "All";
-        typeSelect.value = "All";
+        // Chỉ ẩn nếu con trỏ chuột di chuyển ra khỏi:
+        // 1. Chart SVG (gChart)
+        // 2. Detail Panel (#detail-panel)
+        if (!relatedTarget || (!relatedTarget.closest('#d3-chart') && !relatedTarget.closest('#detail-panel'))) {
+             currentHoveredNode = null;
+             d3.select(".detail-info-column").html(`<p class="initial-msg">Hover over a bubble/dot to see detail information.</p>`);
+             d3.select(".detail-chart-column").html('');
+        }
+    }, 100); 
+}
 
-        renderDashboard();
-        return;
-    }
-    
-    // Logic 2: Region selected -> Activate and narrow down
-    let filteredByRegion = RAW.filter(d => d.region === selectedRegion);
-    
-    // Enable dependent filters
-    actor1Select.disabled = false;
-    yearSelect.disabled = false;
-    typeSelect.disabled = false;
-    
-    // Gather lists for dependent filters based on selected Region
-    const activeActors = new Set();
-    const activeYears = new Set();
-    const activeTypes = new Set();
-    
-    filteredByRegion.forEach(d => {
-        if (d.side_a) activeActors.add(d.side_a);
-        if (d.side_b) activeActors.add(d.side_b);
-        activeYears.add(d.year);
-        activeTypes.add(d.type_of_violence);
-    });
-    
-    // Update Actor 1 list
-    const newActorList = ["All", ...Array.from(activeActors).filter(Boolean).sort()];
-    fillSelect("actor1Select", newActorList);
-
-    // Update Year list
-    const newYearList = ["All", ...Array.from(activeYears).filter(Boolean).sort()];
-    fillSelect("yearSelect", newYearList);
-
-    // Update Type list
-    const newTypeOptions = ["All", ...Array.from(activeTypes).filter(Boolean).sort()];
-    document.getElementById("typeSelect").innerHTML = newTypeOptions.map(v => {
-        const label = v === "All" ? "All" : TYPE_MAPPING[v] || `Unknown (${v})`;
-        return `<option value="${v}">${label}</option>`;
-    }).join("");
+// Remove locking functionality on panel click
+d3.select("#detail-panel").on("click", null); 
 
 
-    // Maintain/Reset selections
-    if (newActorList.includes(currentActor1)) {
-        actor1Select.value = currentActor1;
-    } else {
-        actor1Select.value = "All";
-        fillSelect("actor2Select", ["All"]);
-        actor2Select.disabled = true;
-    }
-    
-    if (newYearList.includes(currentYear)) {
-        yearSelect.value = currentYear;
-    } else {
-        yearSelect.value = "All";
-    }
-    
-    const newTypeValues = ["All", ...Array.from(activeTypes)];
-    if (newTypeValues.includes(currentType)) {
-        typeSelect.value = currentType;
-    } else {
-        typeSelect.value = "All";
-    }
-    
-    // If Actor 1 is still selected (not "All"), run Actor logic to further filter
-    if (actor1Select.value !== "All") {
-         updateDependentFiltersByActor(filteredByRegion);
-    } else {
-         renderDashboard();
-    }
+// ----------------------------------------------------------------------
+// CHARTS IN DETAIL PANEL
+// ----------------------------------------------------------------------
+
+function drawCountryCharts(countryRawData, countryName, highestEventData, showStackedAreaChart, showStackedBarChart, victimLabelsStacked, victimLabelsBar) {
+    
+    // --- 1. Victim Breakdown Bar Chart (Casualty composition of the highest event) ---
+    const victimBreakdownData = VICTIM_KEYS.map(key => ({
+        key: key,
+        name: victimLabelsBar[key],
+        value: d3.sum(highestEventData, d => d[key] || 0)
+    })).filter(d => d.value > 0);
+    
+    if (victimBreakdownData.length > 0) {
+        const barSvg = d3.select("#country-victim-breakdown-chart-container")
+            .append("svg")
+            .attr("width", DETAIL_CHART_WIDTH)
+            .attr("height", DETAIL_CHART_HEIGHT);
+        
+        const barG = barSvg.append("g")
+            .attr("transform", `translate(${DETAIL_CHART_MARGIN.left},${DETAIL_CHART_MARGIN.top})`);
+        
+        barG.append("text").attr("class", "chart-header")
+            .attr("y", -5).attr("font-weight", "bold").attr("font-size", 12)
+            .text("Casualty Composition of the Highest Event"); 
+
+        const xScale = d3.scaleBand()
+            .domain(victimBreakdownData.map(d => d.name))
+            .range([0, DETAIL_INNER_WIDTH])
+            .padding(0.3);
+
+        const yScale = d3.scaleLinear()
+            .domain([0, d3.max(victimBreakdownData, d => d.value) * 1.1])
+            .range([DETAIL_INNER_HEIGHT, 0]);
+
+        barG.selectAll(".bar")
+            .data(victimBreakdownData)
+            .join("rect")
+            .attr("class", "bar")
+            .attr("x", d => xScale(d.name))
+            .attr("y", d => yScale(d.value))
+            .attr("width", xScale.bandwidth())
+            .attr("height", d => DETAIL_INNER_HEIGHT - yScale(d.value))
+            .attr("fill", d => VICTIM_COLORS(d.key)) 
+            .append("title")
+            .text(d => `${d.name}: ${d3.format(",")(d.value)}`);
+
+        barG.append("g")
+            .attr("transform", `translate(0,${DETAIL_INNER_HEIGHT})`)
+            .call(d3.axisBottom(xScale).tickFormat(d => d.split('(')[0].trim())); 
+
+        barG.append("g")
+            .call(d3.axisLeft(yScale).ticks(3, "s"));
+    }
+
+
+    // --- 2. Stacked Area Chart (Casualty Trend over Years) ---
+    if (showStackedAreaChart) {
+           const yearlyVictimDataRaw = Array.from(d3.group(countryRawData, d => d.year),
+                ([year, yearGroup]) => {
+                    const obj = { year: +year };
+                    VICTIM_KEYS.forEach(key => {
+                        obj[key] = d3.sum(yearGroup, d => d[key] || 0);
+                    });
+                    return obj;
+                }
+            ).sort((a, b) => a.year - b.year);
+            
+            const stackArea = d3.stack().keys(VICTIM_KEYS);
+            const seriesArea = stackArea(yearlyVictimDataRaw);
+
+            const areaSvg = d3.select("#country-stacked-area-chart-container")
+                .append("svg")
+                .attr("width", DETAIL_CHART_WIDTH)
+                .attr("height", DETAIL_CHART_HEIGHT);
+
+            const areaG = areaSvg.append("g")
+                .attr("transform", `translate(${DETAIL_CHART_MARGIN.left},${DETAIL_CHART_MARGIN.top})`);
+            
+            areaG.append("text")
+                .attr("class", "chart-header")
+                .attr("y", -5).attr("font-weight", "bold").attr("font-size", 12)
+                .text(`Casualty Trend (Absolute) by Victim Type`);
+
+            const allYears = d3.extent(yearlyVictimDataRaw, d => d.year);
+            const maxStackValue = d3.max(seriesArea, layer => d3.max(layer, d => d[1])) || 10;
+
+            const xScale = d3.scaleLinear()
+                .domain(allYears)
+                .range([0, DETAIL_INNER_WIDTH]);
+
+            const yScale = d3.scaleLinear()
+                .domain([0, maxStackValue * 1.1])
+                .range([DETAIL_INNER_HEIGHT, 0]);
+
+            const area = d3.area()
+                .x(d => xScale(d.data.year))
+                .y0(d => yScale(d[0]))
+                .y1(d => yScale(d[1]))
+                .curve(d3.curveMonotoneX);
+
+            areaG.selectAll(".area")
+                .data(seriesArea)
+                .join("path")
+                .attr("class", "area")
+                .attr("fill", d => VICTIM_COLORS(d.key))
+                .attr("d", area)
+                .style("opacity", 0.7); 
+
+            areaG.append("g")
+                .attr("transform", `translate(0,${DETAIL_INNER_HEIGHT})`)
+                .call(d3.axisBottom(xScale).ticks(3).tickFormat(d3.format("d")));
+
+            areaG.append("g")
+                .call(d3.axisLeft(yScale).ticks(3, "s"));
+                
+            // ADD LEGEND FOR STACKED AREA CHART
+            const legendArea = areaG.append("g").attr("transform", `translate(0, ${DETAIL_INNER_HEIGHT + 20})`);
+            
+            VICTIM_KEYS.forEach((key, i) => {
+                const name = victimLabelsStacked[key];
+                const color = VICTIM_COLORS(key);
+                
+                legendArea.append("rect")
+                    .attr("x", i * 140)
+                    .attr("y", 0)
+                    .attr("width", 8)
+                    .attr("height", 8)
+                    .attr("fill", color);
+                legendArea.append("text")
+                    .attr("x", i * 140 + 10)
+                    .attr("y", 8)
+                    .style("font-size", "10px")
+                    .text(name);
+            });
+    }
+
+    // --- 3. Horizontal/Vertical Stacked Bar Chart 100%: Percentage of violence type by year/all years ---
+    if (showStackedBarChart) {
+        const typeKeys = Array.from(new Set(countryRawData.map(d => d.type_of_violence_name))).sort();
+        
+        // Check if we should draw a vertical chart (multiple years from a country bubble)
+        const yearCount = Array.from(d3.group(countryRawData, d => d.year)).length;
+        const isMultiYearCountryDetail = currentChart !== 'chart3' && yearCount > 1;
+
+        let dataForPlot;
+        let yearDisplay = '';
+        
+        if (isMultiYearCountryDetail) {
+            // Case 1: Multiple years for a country (Vertical 100% Stacked Bar)
+            // Aggregate data by year and then by violence type
+            dataForPlot = Array.from(d3.group(countryRawData, d => d.year),
+                ([year, yearGroup]) => {
+                    const totalYearlyBest = d3.sum(yearGroup, d => d.best);
+                    const totals = d3.rollup(yearGroup, sum => d3.sum(sum, d => d.best), d => d.type_of_violence_name);
+                    
+                    const obj = { year: +year, total: totalYearlyBest };
+                    for (const key of typeKeys) {
+                        obj[key] = totals.get(key) || 0;
+                    }
+                    return obj;
+                }
+            ).sort((a, b) => a.year - b.year);
+            
+            const yearRange = d3.extent(dataForPlot, d => d.year);
+            yearDisplay = `${yearRange[0]} - ${yearRange[1]}`;
+
+        } else {
+            // Case 2: Single Year (Chart 3 detail) OR Single Aggregate Bar for Country (Chart 1, 2, 4 with only 1 year)
+            // Use existing logic for single horizontal bar
+            
+            let totalBest = d3.sum(countryRawData, d => d.best);
+            const totals = d3.rollup(countryRawData, sum => d3.sum(sum, d => d.best), d => d.type_of_violence_name);
+
+            const yearRange = d3.extent(countryRawData, d => d.year);
+            yearDisplay = yearRange[0] === yearRange[1] ? yearRange[0] : `${yearRange[0]} - ${yearRange[1]}`;
+            
+            const singleYearData = { year: yearDisplay, total: totalBest };
+            for (const key of typeKeys) {
+                singleYearData[key] = totals.get(key) || 0; 
+            }
+            dataForPlot = [singleYearData];
+        }
+        
+        if (dataForPlot.length === 0 || d3.sum(dataForPlot, d => d.total) === 0) return;
+
+        // --- DRAWING LOGIC STARTS HERE ---
+        
+        const barSvg = d3.select("#country-stacked-bar-chart-container")
+            .append("svg")
+            .attr("width", DETAIL_CHART_WIDTH)
+            .attr("height", DETAIL_CHART_HEIGHT);
+        
+        const barG = barSvg.append("g")
+            .attr("transform", `translate(${DETAIL_CHART_MARGIN.left},${DETAIL_CHART_MARGIN.top})`);
+        
+        barG.append("text").attr("class", "chart-header")
+            .attr("y", -5).attr("font-weight", "bold").attr("font-size", 12)
+            .text(`Percentage of Violence Type in ${yearDisplay} (%)`);
+
+        const stack = d3.stack().keys(typeKeys).order(d3.stackOrderNone).offset(d3.stackOffsetExpand);
+        const series = stack(dataForPlot);
+        
+        if (isMultiYearCountryDetail) {
+            // --- DRAW VERTICAL STACKED BAR CHART (TIME SERIES) ---
+            
+            const xYearScale = d3.scaleBand()
+                .domain(dataForPlot.map(d => d.year))
+                .range([0, DETAIL_INNER_WIDTH])
+                .padding(0.1);
+
+            const yScalePercent = d3.scaleLinear()
+                .domain([0, 1]) // 0% to 100%
+                .range([DETAIL_INNER_HEIGHT, 0]);
+
+            // Draw X Axis (Years) - Show every 5th tick for readability
+            barG.append("g")
+                .attr("transform", `translate(0,${DETAIL_INNER_HEIGHT})`)
+                .call(d3.axisBottom(xYearScale).tickFormat(d3.format("d")).tickValues(xYearScale.domain().filter((d, i) => !(i % 5))));
+
+            // Draw Y Axis (Percentage)
+            barG.append("g")
+                .call(d3.axisLeft(yScalePercent).ticks(5, "%"));
+
+            // Draw Bars
+            barG.append("g")
+                .selectAll("g")
+                .data(series)
+                .join("g")
+                .attr("fill", d => TYPE_COLORS(d.key))
+                .selectAll("rect")
+                .data(d => d.filter(item => item.data.total > 0))
+                .join("rect")
+                .attr("x", d => xYearScale(d.data.year))
+                .attr("y", d => yScalePercent(d[1]))
+                .attr("height", d => yScalePercent(d[0]) - yScalePercent(d[1]))
+                .attr("width", xYearScale.bandwidth())
+                .each(function(d) {
+                    const currentKey = d3.select(this.parentNode).datum().key;
+                    const percentage = d.data.total > 0 ? d.data[currentKey] / d.data.total : 0;
+                    
+                    d3.select(this).append("title")
+                        .text(`${d.data.year} - ${currentKey}: ${d3.format(".1%")(percentage)}`);
+                });
+                
+        } else {
+            // --- DRAW HORIZONTAL STACKED BAR CHART (AGGREGATE/SINGLE YEAR) ---
+            
+            const xScaleStack = d3.scaleLinear()
+                .domain([0, 1]) 
+                .range([0, DETAIL_INNER_WIDTH]);
+
+            const yScaleStack = d3.scaleBand()
+                .domain([dataForPlot[0].year]) 
+                .range([0, DETAIL_INNER_HEIGHT])
+                .padding(0.3);
+
+            // Draw X Axis (percentage axis)
+            barG.append("g")
+                .attr("transform", `translate(0,${DETAIL_INNER_HEIGHT})`)
+                .call(d3.axisBottom(xScaleStack).ticks(5).tickFormat(d3.format(".0%"))); 
+
+            // Draw Y Axis (Year axis) - Ẩn nhãn cho thanh đơn
+            barG.append("g")
+                .call(d3.axisLeft(yScaleStack).tickSize(0).tickFormat(() => ''));
+
+            // Draw Bars
+            barG.append("g")
+                .selectAll("g")
+                .data(series)
+                .join("g")
+                .attr("fill", d => TYPE_COLORS(d.key))
+                .selectAll("rect")
+                .data(d => d)
+                .join("rect")
+                .attr("class", "detail-bar-horizontal")
+                .attr("x", d => xScaleStack(d[0])) 
+                .attr("y", d => yScaleStack(d.data.year))
+                .attr("width", d => xScaleStack(d[1]) - xScaleStack(d[0])) 
+                .attr("height", yScaleStack.bandwidth())
+                .each(function(d) {
+                    const currentKey = d3.select(this.parentNode).datum().key;
+                    const percentage = d.data.total > 0 ? d.data[currentKey] / d.data.total : 0;
+                    
+                    d3.select(this).append("title")
+                        .text(`${currentKey}: ${d3.format(".1%")(percentage)}`);
+                        
+                    if (percentage > 0.05) { 
+                        barG.append("text")
+                            .attr("x", xScaleStack(d[0]) + (xScaleStack(d[1]) - xScaleStack(d[0])) / 2) 
+                            .attr("y", yScaleStack(d.data.year) + yScaleStack.bandwidth() / 2 + 3)
+                            .attr("text-anchor", "middle")
+                            .style("fill", "#fff")
+                            .style("font-size", "10px")
+                            .text(d3.format(".0%")(percentage));
+                    }
+                });
+        }
+
+        // Legend logic remains the same
+        const legendBar = barG.append("g").attr("transform", `translate(0, ${DETAIL_INNER_HEIGHT + 20})`);
+        
+        typeKeys.forEach((key, i) => {
+            legendBar.append("rect")
+                .attr("x", i * 140)
+                .attr("width", 8)
+                .attr("height", 8)
+                .attr("fill", TYPE_COLORS(key));
+            legendBar.append("text")
+                .attr("x", i * 140 + 10)
+                .attr("y", 8)
+                .style("font-size", "10px")
+                .text(key.split(' ')[0]);
+        });
+    }
+}
+
+// ----------------------------------------------------------------------
+// SWITCHING AND INITIALIZATION LOGIC (MAIN)
+// ----------------------------------------------------------------------
+
+function switchChart(chartId) {
+    currentHoveredNode = null; 
+    currentChart = chartId;
+    
+    d3.select("#detail-panel").classed("locked", false);
+    d3.select("#detail-panel").select('.panel-title').text('Detail Information');
+
+    d3.selectAll(".tab-button").classed("active", false);
+    d3.select(`[data-chart="${chartId}"]`).classed("active", true);
+
+    const totalCasualties = d3.sum(rawProcessedData, d => d.best);
+    const totalEvents = rawProcessedData.length;
+    d3.select("#totalCasualties").text(d3.format(",")(totalCasualties));
+    d3.select("#totalEvents").text(d3.format(",")(totalEvents));
+    
+    // Reset Detail Panel when switching charts
+    d3.select(".detail-info-column").html(`<p class="initial-msg">Hover over a bubble/dot to see detail information.</p>`);
+    d3.select(".detail-chart-column").html('');
+
+
+    if (chartId === 'chart3') {
+        if (!activeRegions.includes('Global') && activeRegions.every(r => !REGION_COLORS.hasOwnProperty(r))) {
+             activeRegions = ['Global']; 
+        }
+    } else {
+        const allRegionsKeys = Object.keys(REGION_COLORS);
+        activeRegions = allRegionsKeys.filter(r => activeRegions.includes(r));
+        if (activeRegions.length === 0 || activeRegions.includes('Global')) {
+            activeRegions = allRegionsKeys; 
+        }
+    }
+    
+    // Update legend
+    createLegend(REGION_COLORS); 
+    
+    // Update active state for legend
+    d3.selectAll(".legend-item").classed("active", function() {
+        const regionName = d3.select(this).attr("data-region");
+        return activeRegions.includes(regionName);
+    });
+
+    switch (chartId) {
+        case 'chart1':
+            drawChart1();
+            break;
+        case 'chart2':
+            drawChart2();
+            break;
+        case 'chart3':
+            drawChart3();
+            break;
+        case 'chart4':
+            drawChart4();
+            break;
+    }
+}
+
+// ----------------------------------------------------------------------
+// MAIN CHART DRAWING FUNCTIONS (Kept as is - only detail panel logic changed)
+// ----------------------------------------------------------------------
+function drawChart1() {
+    cleanChartArea();
+    
+    gChart.append("text")
+        .attr("class", "chart-title")
+        .attr("x", innerWidth / 2)
+        .attr("y", -10)
+        .attr("text-anchor", "middle")
+        .text("Aggregated Casualties by Country (Bubble Size)");
+
+    const filteredData = rawProcessedData.filter(d => activeRegions.includes(d.region));
+    const aggregatedData = aggregateDataByCountry(filteredData);
+
+    const root = d3.hierarchy({ children: aggregatedData })
+        .sum(d => d.best)
+        .sort((a, b) => b.value - a.value);
+
+    const packLayout = d3.pack()
+        .size([innerWidth, innerHeight])
+        .padding(2);
+
+    const nodes = packLayout(root).leaves();
+    const t = svg.transition().duration(800);
+
+    let node = gChart.selectAll(`.bubble-group.chart-${currentChart}`).data(nodes, d => d.data.name); 
+
+    // EXIT
+    node.exit().transition(t).remove();
+
+    // ENTER
+    const nodeEnter = node.enter().append("g")
+        .attr("class", `bubble-group node chart-${currentChart}`)
+        .attr("transform", d => `translate(${innerWidth / 2},${innerHeight / 2})`); 
+
+    // CIRCLE
+    nodeEnter.append("circle")
+        .attr("r", 0)
+        .attr("fill", d => regionScale(d.data.region)) 
+        .attr("stroke", "#333")
+        .attr("stroke-width", 0.5)
+        .style("opacity", 0.85)
+        // **SỬA LỖI HOVER:** Xóa timeout cũ khi hover vào bubble mới
+        .on("mouseover", (event, d) => {
+             if (hoverTimeout) clearTimeout(hoverTimeout);
+             showFullDetail(d);
+         })
+        .on("click", (event, d) => {
+             d3.select("#detail-panel").classed("locked", false).select('.panel-title').text('Detail Information');
+             showFullDetail(d);
+        })
+        .on("mouseout", hideDetail);
+
+
+    // TEXT (Country)
+    nodeEnter.append("text")
+        .attr("text-anchor", "middle")
+        .attr("dy", "0.3em")
+        .style("fill", "#fff")
+        .style("pointer-events", "none")
+        .text(d => d.data.name)
+        .style("font-size", "10px");
+
+
+    // UPDATE + ENTER (Transition)
+    node = nodeEnter.merge(node);
+
+    node.transition(t)
+        .attr("transform", d => `translate(${d.x},${d.y})`);
+
+    node.select("circle").transition(t)
+        .attr("r", d => d.r);
+        
+    node.select("text").transition(t)
+        .style("display", d => d.r < 30 ? "none" : "block");
+
+    // TOOLTIP (Title - fallback)
+    node.append("title")
+        .text(d => `${d.data.name} (${d.data.region}) \nTotal Casualties: ${d3.format(",")(d.data.best)}`);
+}
+
+function drawChart2() {
+    cleanChartArea();
+    
+    gChart.append("text")
+        .attr("class", "chart-title")
+        .attr("x", innerWidth / 2)
+        .attr("y", -10)
+        .attr("text-anchor", "middle")
+        .text("Casualty Breakdown by Violence Type (Bubble is Country)");
+
+    const filteredData = rawProcessedData.filter(d => activeRegions.includes(d.region));
+
+    const groupedData = Array.from(d3.group(filteredData,
+        d => d.type_of_violence_name
+    ), ([type, typeGroup]) => {
+        const aggregatedCountries = aggregateDataByCountry(typeGroup); 
+        const regions = Array.from(d3.group(aggregatedCountries, d => d.region),
+            ([region, countries]) => ({ 
+                name: region, 
+                children: countries 
+            })
+        );
+        return { name: type, children: regions };
+    });
+
+    const types = Array.from(new Set(filteredData.map(d => d.type_of_violence_name)));
+    const numTypes = types.length;
+    const subChartWidth = innerWidth / numTypes;
+
+    gChart.selectAll('.chart-header').data(types).join(
+        enter => enter.append('text')
+            .attr('class', 'chart-header')
+            .attr('x', (d, i) => i * subChartWidth + subChartWidth / 2)
+            .attr('y', innerHeight + 40) 
+            .attr('text-anchor', 'middle')
+            .text(d => d)
+            .style('fill', '#333')
+            .style('font-weight', 'bold')
+    );
+
+    groupedData.forEach((group, i) => {
+        const xOffset = i * subChartWidth;
+        const availableWidth = subChartWidth - 10;
+        const availableHeight = innerHeight;
+
+        const root = d3.hierarchy(group)
+            .sum(d => d.best)
+            .sort((a, b) => b.value - a.value);
+
+        const packLayout = d3.pack()
+            .size([availableWidth, availableHeight])
+            .padding(4);
+
+        const nodes = packLayout(root).leaves();
+        const t = svg.transition().duration(800);
+
+        let node = gChart.selectAll(`.bubble-group.type-${escapeHtmlId(group.name)}`).data(nodes, d => d.data.name + group.name); 
+
+        // EXIT
+        node.exit().transition(t).remove();
+
+        // ENTER
+        const nodeEnter = node.enter().append("g")
+            .attr("class", `bubble-group node chart-${currentChart}`)
+            .attr("transform", d => `translate(${xOffset + availableWidth / 2},${availableHeight / 2})`);
+
+        // CIRCLE (Color by Region/Continent)
+        nodeEnter.append("circle")
+            .attr("r", 0)
+            .attr("fill", d => regionScale(d.data.region))
+            .attr("stroke", "#333")
+            .attr("stroke-width", 0.5)
+            .style("opacity", 0.85)
+        // **SỬA LỖI HOVER:** Xóa timeout cũ khi hover vào bubble mới
+            .on("mouseover", (event, d) => {
+                if (hoverTimeout) clearTimeout(hoverTimeout);
+                showFullDetail({
+                    data: {
+                        ...d.data, 
+                        type_of_violence_name: group.name, 
+                        detail: d.data.detail
+                    }
+                });
+             }) 
+             .on("click", (event, d) => {
+                 d3.select("#detail-panel").classed("locked", false).select('.panel-title').text('Detail Information');
+                 showFullDetail({
+                     data: {
+                         ...d.data, 
+                         type_of_violence_name: group.name, 
+                         detail: d.data.detail
+                     }
+                 });
+             })
+            .on("mouseout", hideDetail); 
+
+
+        // TEXT (Country)
+        nodeEnter.append("text")
+            .attr("text-anchor", "middle")
+            .attr("dy", "0.3em")
+            .style("fill", "#fff")
+            .style("pointer-events", "none")
+            .text(d => d.data.name)
+            .style("font-size", "10px");
+
+
+        // UPDATE + ENTER (Transition)
+        node = nodeEnter.merge(node);
+
+        node.transition(t)
+            .attr("transform", d => `translate(${xOffset + d.x},${d.y})`);
+
+        node.select("circle").transition(t)
+            .attr("r", d => d.r);
+            
+        node.select("text").transition(t)
+            .style("display", d => d.r < 30 ? "none" : "block");
+    });
+}
+
+function drawChart3() {
+    cleanChartArea();
+    
+    const dataForGlobalCalculation = rawProcessedData;
+    
+    // 1. Group data by Year and Region
+    const yearlyRegionalData = Array.from(d3.group(dataForGlobalCalculation, d => d.region),
+        ([region, regionGroup]) => ({
+            name: region,
+            values: Array.from(d3.rollup(regionGroup,
+                v => d3.sum(v, d => d.best),
+                d => d.year
+            ), ([year, best]) => ({ year: +year, best: best })).sort((a, b) => a.year - b.year)
+        })
+    );
+
+    // 2. Global total data
+    const yearlyGlobalData = {
+        name: 'Global',
+        values: Array.from(d3.rollup(dataForGlobalCalculation,
+            v => d3.sum(v, d => d.best),
+            d => d.year
+        ), ([year, best]) => ({ year: +year, best: best })).sort((a, b) => a.year - b.year)
+    };
+    
+    const allLineData = [...yearlyRegionalData, yearlyGlobalData];
+    
+    // Filter only selected regions (from legend)
+    let dataToDraw = allLineData.filter(d => activeRegions.includes(d.name));
+    
+    // 3. Set up Axes
+    const allYears = d3.extent(dataForGlobalCalculation, d => d.year);
+    const maxAllBest = d3.max(allLineData.flatMap(d => d.values), d => d.best) || 0; 
+
+    const xScale = d3.scaleLinear()
+        .domain(allYears)
+        .range([0, innerWidth]);
+
+    const yScale = d3.scaleLinear()
+        .domain([0, maxAllBest * 1.1 || 10]) 
+        .range([innerHeight, 0]);
+
+    gChart.selectAll('.x-axis, .y-axis').remove();
+
+    // 4. Draw Axes and Title
+    gChart.append("g")
+        .attr("class", "x-axis")
+        .attr("transform", `translate(0,${innerHeight})`)
+        .call(d3.axisBottom(xScale).tickFormat(d3.format("d"))); 
+
+    gChart.append("g")
+        .attr("class", "y-axis")
+        .call(d3.axisLeft(yScale).ticks(5, "s"))
+        .append("text")
+        .attr("transform", "rotate(-90)").attr("y", -60).attr("x", -innerHeight / 2).attr("dy", "1em")
+        .attr("fill", "#000").attr("text-anchor", "middle").attr("font-size", 14)
+        .text("Total Casualties (BEST)");
+
+    gChart.append("text")
+        .attr("class", "chart-title")
+        .attr("x", innerWidth / 2)
+        .attr("y", -10)
+        .attr("text-anchor", "middle")
+        .text("UCDP GED Casualty Trends Over Years by Region");
+
+    // 5. Define Line
+    const line = d3.line()
+        .defined(d => d.best !== null && d.best !== undefined && !isNaN(d.best)) 
+        .x(d => xScale(d.year))
+        .y(d => yScale(d.best))
+        .curve(d3.curveMonotoneX);
+
+    // 6. Draw/Update Line
+    gChart.selectAll(".line-group")
+        .data(dataToDraw, d => d.name) 
+        .join(
+            enter => enter.append("path")
+                .attr("class", d => `line-group line-${escapeHtmlId(d.name)}`)
+                .attr("fill", "none")
+                .attr("stroke-width", d => (d.name === 'Global' ? 4 : 2))
+                .attr("stroke", d => (d.name === 'Global' ? '#000' : regionScale(d.name)))
+                .attr("d", d => line(d.values))
+                .style("opacity", 0)
+                .call(enter => enter.transition().duration(1000).style("opacity", 1)),
+            update => update.transition().duration(1000)
+                .attr("d", d => line(d.values))
+                .attr("stroke-width", d => (d.name === 'Global' ? 4 : 2))
+                .attr("stroke", d => (d.name === 'Global' ? '#000' : regionScale(d.name)))
+                .style("opacity", 1),
+            exit => exit.transition().duration(500).style("opacity", 0).remove()
+        );
+
+    // 7. Update legend
+    let updatedColors = {...REGION_COLORS};
+    updatedColors['Global'] = '#000';
+    createLegend(updatedColors); 
+    
+    // 8. Add/update hover event for data points (dots)
+    const dotGroups = gChart.selectAll(".dot-group")
+        .data(dataToDraw, d => d.name)
+        .join("g")
+        .attr("class", "dot-group");
+
+    dotGroups.selectAll(".dot")
+        .data(d => d.values)
+        .join("circle")
+        .attr("class", "dot")
+        .attr("cx", d => xScale(d.year))
+        .attr("cy", d => yScale(d.best))
+        .attr("r", 3)
+        .attr("fill", "#d62728") // DOT color is RED
+        .attr("stroke", "#000")
+        .attr("stroke-width", 0)
+        // **SỬA LỖI HOVER:** Xóa timeout cũ khi hover vào dot mới
+        .on("mouseover", function(event, d) {
+            if (hoverTimeout) clearTimeout(hoverTimeout);
+            const regionName = d3.select(this.parentNode).datum().name;
+            
+            // Highlight DOT being hovered
+            d3.select(this)
+                .transition().duration(100)
+                .attr("r", 6) // MAKE DOT BIGGER
+                .attr("fill", "#1f77b4") // Highlight color is BLUE
+                .attr("stroke-width", 1.5);
+
+            // Save data of this dot into currentHoveredNode (use a dummy structure)
+            currentHoveredNode = { 
+                data: { 
+                    name: regionName, 
+                    detail: [{ year: d.year, best: d.best }], 
+                    best: d.best 
+                } 
+            }; 
+
+            // CALL NEW FUNCTION TO DISPLAY DETAIL
+            showYearDetail(d, regionName);
+        })
+        .on("click", function(event, d) {
+             const regionName = d3.select(this.parentNode).datum().name;
+             d3.select("#detail-panel").classed("locked", false).select('.panel-title').text('Detail Information');
+             // Save data and call again
+             currentHoveredNode = { 
+                 data: { 
+                     name: regionName, 
+                     detail: [{ year: d.year, best: d.best }],
+                     best: d.best 
+                 } 
+             }; 
+             showYearDetail(d, regionName);
+        })
+        .on("mouseout", function(event, d) {
+            // Revert DOT to original size
+            d3.select(this)
+                .transition().duration(100)
+                .attr("r", 3)
+                .attr("fill", "#d62728")
+                .attr("stroke-width", 0);
+            
+            hideDetail(event, currentHoveredNode); 
+        })
+        .append("title")
+        .text(d => `${d3.select(this.parentNode).datum().name} (${d.year}): ${d3.format(",")(d.best)}`);
+}
+
+function drawChart4() {
+    cleanChartArea();
+    
+    gChart.append("text")
+        .attr("class", "chart-title")
+        .attr("x", innerWidth / 2)
+        .attr("y", -10)
+        .attr("text-anchor", "middle")
+        .text(`Top ${CHART4_COUNTRY_LIMIT} Countries with Highest Casualties (Size: Violence Type)`);
+
+    // FILTER DATA BY CONTINENT
+    const filteredData = rawProcessedData.filter(d => activeRegions.includes(d.region));
+
+    // 1. Get Top 15 Countries (with filtered data)
+    const countryAgg = Array.from(d3.rollup(filteredData,
+        v => ({
+            best: d3.sum(v, d => d.best),
+            events: v.length,
+            region: v[0].region
+        }),
+        d => d.country
+    )).map(([country, values]) => ({ name: country, ...values }))
+      .filter(d => d.best > 0) 
+      .sort((a, b) => b.best - a.best)
+      .slice(0, CHART4_COUNTRY_LIMIT); 
+
+    const countryNames = countryAgg.map(c => c.name);
+
+    const groupedData = Array.from(d3.group(filteredData.filter(d => countryNames.includes(d.country)), d => d.country), 
+        ([country, countryGroup]) => {
+            const countryInfo = countryAgg.find(c => c.name === country);
+
+            const types = Array.from(d3.rollup(countryGroup,
+                v => d3.sum(v, d => d.best),
+                d => d.type_of_violence_name
+            ), ([type, value]) => ({ name: type, best: value, region: countryInfo.region }));
+
+            return { 
+                name: country, 
+                children: types, 
+                region: countryInfo.region,
+                total_best: countryInfo.best,
+                total_events: countryInfo.events,
+                detail: countryGroup 
+            };
+    }).filter(d => d !== null).sort((a, b) => b.total_best - a.total_best);
+
+    const numCountries = groupedData.length;
+    const numCols = CHART4_NUM_COLS; // 3 columns
+    const subChartWidth = innerWidth / numCols;
+    const numRows = Math.ceil(numCountries / numCols);
+    const subChartHeight = numRows > 0 ? innerHeight / numRows : innerHeight; 
+
+    const t = svg.transition().duration(800);
+
+    groupedData.forEach((group, i) => {
+        const col = i % numCols;
+        const row = Math.floor(i / numCols);
+        const xOffset = col * subChartWidth;
+        const yOffset = row * subChartHeight;
+
+        const packLayout = d3.pack()
+            .size([subChartWidth - 10, subChartHeight - 40]) // Subtract space for header 
+            .padding(1);
+
+        const root = d3.hierarchy(group)
+            .sum(d => d.best) 
+            .sort((a, b) => b.value - a.value);
+        
+        const nodes = root.children ? packLayout(root).leaves() : [];
+
+        // Country Header (Positioning country name and figures)
+        const headerG = gChart.append('g')
+            .attr("class", "chart-header-group")
+            .attr("transform", `translate(${xOffset + subChartWidth / 2},${yOffset + 10})`);
+            
+        headerG.append('text')
+            .attr("class", "chart-header country-name")
+            .attr("text-anchor", "middle")
+            .attr("y", 0)
+            .text(group.name)
+            .style("fill", regionScale(group.region))
+            .style("font-weight", "bold")
+            .style("font-size", "14px");
+
+        headerG.append('text')
+            .attr("class", "chart-header event-count")
+            .attr("text-anchor", "middle")
+            .attr("y", 15)
+            .text(`Events: ${d3.format(",")(group.total_events)}`)
+            .style("font-size", "10px");
+            
+        headerG.append('text')
+            .attr("class", "chart-header casualty-count")
+            .attr("text-anchor", "middle")
+            .attr("y", 28)
+            .text(`Casualties: ${d3.format(",")(group.total_best)}`)
+            .style("font-size", "10px");
+
+
+        let node = gChart.selectAll(`.bubble-group.country-${escapeHtmlId(group.name)}`).data(nodes, d => d.data.name + group.name);
+
+        // EXIT
+        node.exit().transition(t).remove();
+
+        // ENTER
+        const nodeEnter = node.enter().append("g")
+            .attr("class", `bubble-group node chart-${currentChart}`)
+            .attr("transform", d => `translate(${xOffset + subChartWidth / 2},${yOffset + subChartHeight / 2})`);
+
+        // CIRCLE (Color by Violence Type)
+        nodeEnter.append("circle")
+            .attr("r", 0)
+            .attr("fill", d => TYPE_COLORS(d.data.name)) 
+            .attr("stroke", "#333")
+            .attr("stroke-width", 0.5)
+            .style("opacity", 0.85)
+        // **SỬA LỖI HOVER:** Xóa timeout cũ khi hover vào bubble mới
+            .on("mouseover", (event, d) => {
+                if (hoverTimeout) clearTimeout(hoverTimeout);
+                showFullDetail({
+                    data: {
+                        name: group.name, 
+                        region: group.region, 
+                        best: d.data.best, 
+                        events: group.detail.length, 
+                        detail: group.detail, 
+                        type_of_violence_name: d.data.name 
+                    }
+                });
+            }) 
+             .on("click", (event, d) => {
+                  d3.select("#detail-panel").classed("locked", false).select('.panel-title').text('Detail Information');
+                  showFullDetail({
+                      data: {
+                          name: group.name, 
+                          region: group.region, 
+                          best: d.data.best, 
+                          events: group.detail.length, 
+                          detail: group.detail, 
+                          type_of_violence_name: d.data.name 
+                      }
+                  });
+             })
+            .on("mouseout", hideDetail);
+
+
+        // TEXT (Violence Type Name)
+        nodeEnter.append("text")
+            .attr("text-anchor", "middle")
+            .attr("dy", "0.3em")
+            .style("fill", "#fff")
+            .style("pointer-events", "none")
+            .text(d => d.data.name.split(' ')[0]) 
+            .style("font-size", "8px")
+            .filter(d => d.r < 10)
+            .remove();
+
+        // UPDATE + ENTER (Transition)
+        node = nodeEnter.merge(node);
+
+        node.transition(t)
+            .attr("transform", d => `translate(${xOffset + d.x},${yOffset + d.y + 35})`); // Adjust Y offset
+
+        node.select("circle").transition(t)
+            .attr("r", d => d.r);
+    });
 }
 
 
-function updateDependentFiltersByActor(baseData = RAW) {
-    const selectedActor1 = document.getElementById("actor1Select").value;
-    const actor2Select = document.getElementById("actor2Select");
-    const regionSelect = document.getElementById("regionSelect");
-    const yearSelect = document.getElementById("yearSelect");
-    const typeSelect = document.getElementById("typeSelect");
-
-    const currentRegion = regionSelect.value;
-    
-    // Determine the data scope: Dữ liệu đã lọc theo Region (nếu có)
-    let dataToFilter = baseData;
-    if (currentRegion !== "All" && baseData === RAW) { 
-        dataToFilter = RAW.filter(d => d.region === currentRegion);
-    }
-
-    if (selectedActor1 === "All") {
-        // Actor 1 is reset to "All". Go back to Region-based filtering logic
-        updateDependentFiltersByRegion();
-        return; 
-
-    } else {
-        // Lọc các sự kiện liên quan đến Actor 1 TRONG phạm vi dữ liệu đã lọc (Region)
-        const actor1Events = dataToFilter.filter(d => d.side_a === selectedActor1 || d.side_b === selectedActor1);
-
-        // Preserve current selections before updating lists
-        const currentYear = yearSelect.value;
-        const currentType = typeSelect.value;
-        const currentActor2 = actor2Select.value;
-        const currentRegionSelection = regionSelect.value;
-        
-        // 1. Update Actor 2 (Opponent) list
-        const opponents = new Set();
-        actor1Events.forEach(d => {
-            if (d.side_a === selectedActor1) opponents.add(d.side_b);
-            if (d.side_b === selectedActor1) opponents.add(d.side_a);
-        });
-        const newOpponentList = ["All", ...Array.from(opponents).filter(Boolean).sort()];
-        fillSelect("actor2Select", newOpponentList);
-        actor2Select.disabled = false;
-        if (newOpponentList.includes(currentActor2)) actor2Select.value = currentActor2;
-        
-        // 2. Update Year list
-        const activeYears = new Set(actor1Events.map(d => d.year));
-        const newYearList = ["All", ...Array.from(activeYears).filter(Boolean).sort()];
-        fillSelect("yearSelect", newYearList);
-        if (newYearList.includes(currentYear)) yearSelect.value = currentYear;
-        
-        // 3. Update Type list
-        const activeTypes = new Set(actor1Events.map(d => d.type_of_violence));
-        const newTypeOptions = ["All", ...Array.from(activeTypes).filter(Boolean).sort()];
-        document.getElementById("typeSelect").innerHTML = newTypeOptions.map(v => {
-            const label = v === "All" ? "All" : TYPE_MAPPING[v] || `Unknown (${v})`;
-            return `<option value="${v}">${label}</option>`;
-        }).join("");
-        const newTypeValues = ["All", ...Array.from(activeTypes)];
-        if (newTypeValues.includes(currentType)) typeSelect.value = currentType;
-        
-        // 4. Update Region list (Keep the selection list to the full global list so the user can switch regions easily)
-        // **Đây là phần sửa lỗi: Luôn reset danh sách Region về UNIQUE_REGIONS (Global) nếu Region KHÔNG phải là "All"**
-        if (currentRegionSelection === "All") {
-             const activeRegions = new Set(actor1Events.map(d => d.region));
-             const newRegionList = ["All", ...Array.from(activeRegions).filter(Boolean).sort()];
-             fillSelect("regionSelect", newRegionList);
-             regionSelect.value = "All"; 
-        } else {
-             // Nếu đã chọn Region cụ thể (currentRegionSelection), danh sách Region luôn phải là danh sách Master (UNIQUE_REGIONS)
-             // để người dùng có thể chọn vùng khác.
-             fillSelect("regionSelect", UNIQUE_REGIONS);
-             regionSelect.value = currentRegionSelection;
-        }
-    }
-    renderDashboard();
-}
-
-
-function fillSelect(id, arr) {
-    document.getElementById(id).innerHTML = arr.map(v => `<option value="${v}">${v}</option>`).join("");
-}
-
-function getFiltered() {
-    const y = document.getElementById("yearSelect").value;
-    const a1 = document.getElementById("actor1Select").value;
-    const a2 = document.getElementById("actor2Select").value;
-    const t = document.getElementById("typeSelect").value;
-    const r = document.getElementById("regionSelect").value; 
-
-    return RAW.filter(d => {
-        const yearMatch = (y === "All" || d.year == y);
-        const typeMatch = (t === "All" || d.type_of_violence == t);
-        const regionMatch = (r === "All" || d.region == r); 
-
-        if (!yearMatch || !typeMatch || !regionMatch) return false;
-        
-        if (a1 === "All") return true;
-        if (a2 === "All") return (d.side_a === a1 || d.side_b === a1);
-        return (d.side_a === a1 && d.side_b === a2) || (d.side_a === a2 && d.side_b === a1);
-    });
-}
-
-/* ---------- 2. Render Scenario Management ---------- */
-
-function renderDashboard() {
-    const a1 = document.getElementById("actor1Select").value;
-    
-    // Logic: If Actor 1 is 'All', show the Global Dashboard. Otherwise, show the Detailed Dashboard.
-    if (a1 === "All") {
-        renderGlobalDashboard();
-    } else {
-        renderDetailedDashboard();
-    }
-}
-
-/* ---------- 3. SCENARIO 1: GLOBAL DASHBOARD (UPDATED) ---------- */
-
-function renderGlobalDashboard() {
-    const filteredData = getFiltered();
-    const regionSelect = document.getElementById("regionSelect").value;
-
-    // Update HTML titles based on filter state (Removed numbers)
-    document.getElementById("dashboard").innerHTML = `
-        <div class="chart-row-1"> <div class="chart-cell">
-                <h2>Fatality Breakdown over Time (100% Stacked Area)</h2>
-                <p>Analysis of the proportional change in fatalities by ${regionSelect === "All" ? 'region' : 'violence type'} over time within the filtered scope.</p>
-                <div id="chart-global-death-breakdown"></div>
-            </div>
-        </div>
-        <div class="chart-row-1"> <div class="chart-cell">
-                <h2>Small Multiples: Fatality Trends by Region</h2>
-                <p>Comparison of fatality trends over time across different regions. The Y-axis uses a linear scale to represent the total number of fatalities.</p>
-                <div id="chart-global-small-multiples"></div>
-            </div>
-        </div>
-        <div class="chart-row-1"> <div class="chart-cell">
-                <h2>Top Countries by Violence Type (Stacked Bar)</h2>
-                <p>Analysis of total fatalities for the top 15 countries by the three main types of violence.</p>
-                <div id="chart-global-stacked-bar"></div>
-            </div>
-        </div>
-        <div class="chart-row-1"> <div class="chart-cell">
-                <h2>Event Contribution by Violence Type (Waffle Chart)</h2>
-                <p>A waffle chart displaying the proportion of event counts (not fatalities) for each violence type.</p>
-                <div id="chart-global-regional-waffle"></div>
-            </div>
-        </div>
-        <div class="chart-row-1"> <div class="chart-cell">
-                <h2>Heatmap: Event Density (Year vs. Region)</h2>
-                <p>A heatmap showing the density of *event counts* across years and regions.</p>
-                <div id="chart-global-heatmap-count"></div>
-            </div>
-        </div>
-        <div class="chart-row-1"> <div class="chart-cell">
-                <h2>Heatmap: Data Quality (Year vs. Location Precision)</h2>
-                <p>Assesses data quality. Darker colors indicate a higher number of events with high location precision (1 = Best, 7 = Worst) per year.</p>
-                <div id="chart-global-heatmap-quality"></div>
-            </div>
-        </div>
-    `;
-
-    // DETERMINE DATA GROUPING FOR CHART 2
-    let breakdownData;
-    let breakdownField;
-    let breakdownDomain;
-    let breakdownRange;
-
-    if (regionSelect === "All") {
-        // CASE 1: GLOBAL SCOPE (Group by Region)
-        breakdownData = Array.from(
-            d3.rollups(filteredData, 
-                v => d3.sum(v, d => d.best), 
-                d => d.year,
-                d => d.region
-            ),
-            ([year, regions]) => regions.map(([region, total]) => ({ year: year, category: region, total_deaths: total }))
-        ).flat();
-        breakdownField = "region";
-        breakdownDomain = UNIQUE_REGIONS.filter(r => r !== "All");
-        breakdownRange = d3.schemeCategory10;
-
-    } else {
-        // CASE 2: REGION SELECTED (Group by Violence Type)
-        breakdownData = Array.from(
-            d3.rollups(filteredData, 
-                v => d3.sum(v, d => d.best), 
-                d => d.year,
-                d => d.type_of_violence
-            ),
-            ([year, types]) => types.map(([typeCode, total]) => ({ 
-                year: year, 
-                category: TYPE_MAPPING[typeCode] || `Unknown (${typeCode})`, 
-                total_deaths: total 
-            }))
-        ).flat();
-        breakdownField = "type_of_violence";
-        breakdownDomain = GLOBAL_TYPE_COLORS.domain;
-        breakdownRange = GLOBAL_TYPE_COLORS.range;
-    }
-    
-    // RENDER CHART 2
-    renderGlobal_Breakdown(breakdownData, breakdownField, breakdownDomain, breakdownRange); 
-
-    // RENDER CHART 7: Waffle Chart (Violence Type)
-    const violenceTypeEventCountData = Array.from(
-        d3.rollups(filteredData, v => v.length, d => d.type_of_violence),
-        ([typeCode, count]) => ({ 
-            type_of_violence: typeCode, 
-            type_label: TYPE_MAPPING[typeCode] || `Unknown (${typeCode})`,
-            event_count: count 
-        })
-    ).filter(d => d.event_count > 0);
-    renderGlobal_ViolenceTypeWaffleChart(violenceTypeEventCountData); 
-
-    // RENDER CHART 4: Heatmap Count
-    const heatmapCountData = Array.from(
-        d3.rollups(filteredData, v => v.length, d => d.year, d => d.region),
-        ([year, regions]) => regions.map(([region, count]) => ({ year, region, event_count: count }))
-    ).flat();
-    renderGlobal_HeatmapCount(heatmapCountData);
-
-    // RENDER CHART 5: Heatmap Quality
-    const heatmapQualityData = Array.from(
-        d3.rollups(filteredData, v => v.length, d => d.year, d => d.where_prec),
-        ([year, precisions]) => precisions.map(([precision, count]) => ({ year, where_prec: `Prec: ${precision}`, event_count: count }))
-    ).flat();
-    renderGlobal_HeatmapQuality(heatmapQualityData);
-    
-    // RENDER CHART 6: Stacked Bar Top 15 Countries
-    const countryTotals = Array.from(
-        d3.rollups(filteredData, v => d3.sum(v, d => d.best), d => d.country),
-        ([key, value]) => ({ country: key, total: value })
-    );
-    const barData = countryTotals.sort((a, b) => b.total - a.total).slice(0, 15);
-
-    const top15CountryNames = new Set(barData.map(d => d.country));
-    const top15FilteredData = filteredData.filter(d => top15CountryNames.has(d.country));
-    const stackedBarData = Array.from(
-        d3.rollups(
-            top15FilteredData,
-            v => d3.sum(v, d => d.best),
-            d => d.country,
-            d => d.type_of_violence
-        ),
-        ([country, types]) => types.map(([typeCode, total]) => ({
-            country: country,
-            type_of_violence: TYPE_MAPPING[typeCode] || `Unknown (${typeCode})`,
-            total: total
-        }))
-    ).flat().filter(d => d.total > 0);
-    renderGlobal_StackedBar(stackedBarData);
-
-    // RENDER CHART 8: Small Multiples
-    const smallMultiplesData = Array.from(
-        d3.rollups(filteredData, v => d3.sum(v, d => d.best), d => d.year, d => d.region),
-        ([year, regions]) => regions.map(([region, total]) => ({ year, region, total_fatalities: total }))
-    ).flat().filter(d => d.total_fatalities > 0);
-    renderGlobal_SmallMultiples(smallMultiplesData);
-}
-
-/* -------------------------------------------------------------------------- */
-/* ---------- 4. SCENARIO 2: DETAILED DASHBOARD (KPI and Charts) ---------- */
-/* -------------------------------------------------------------------------- */
-
-function renderDetailedDashboard() {
-    const filteredData = getFiltered();
-    const a1 = document.getElementById("actor1Select").value;
-    const a2 = document.getElementById("actor2Select").value;
-    const y = document.getElementById("yearSelect").value;
-    
-    let title = `Detailed Analysis: ${a1}`;
-    if (a2 !== "All") title += ` vs ${a2}`;
-    if (y !== "All") title += ` (Year ${y})`;
-
-    const opponentName = (a2 !== "All") ? a2 : "All Opponents";
-    const colorDomain = [a1, opponentName, "Civilians", "Unknown"];
-    
-    let totalActor1Deaths = 0;
-    let totalOpponentDeaths = 0;
-    const totalCivilians = d3.sum(filteredData, d => d.deathsCivilians);
-    const totalUnknown = d3.sum(filteredData, d => d.deathsUnknown);
-    const totalEvents = filteredData.length;
-    const totalFatalities = d3.sum(filteredData, d => d.best);
-    
-    // === KPI MAX EVENT LOGIC ===
-    let maxFatalityEvent = null;
-    let minFatalityEvent = null;
-    let maxFatalities = -1;
-    let minFatalities = Infinity;
-
-    const fatalEvents = filteredData.filter(d => d.best > 0);
-
-    fatalEvents.forEach(d => {
-        let currentActor1Deaths = 0;
-        let currentOpponentDeaths = 0;
-        
-        if (d.side_a === a1) {
-            currentActor1Deaths = d.deathsA;
-            if (a2 === "All" || d.side_b === a2) {
-                currentOpponentDeaths = d.deathsB;
-            }
-        } else if (d.side_b === a1) {
-            currentActor1Deaths = d.deathsB;
-            if (a2 === "All" || d.side_a === a2) {
-                currentOpponentDeaths = d.deathsA;
-            }
-        }
-        totalActor1Deaths += currentActor1Deaths;
-        totalOpponentDeaths += currentOpponentDeaths;
-        
-        if (d.best > maxFatalities) {
-            maxFatalities = d.best;
-            maxFatalityEvent = d;
-        }
-
-        if (d.best < minFatalities) {
-            minFatalities = d.best;
-            minFatalities = Math.min(minFatalities, d.best);
-            minFatalityEvent = d;
-        }
-    });
-
-    if (minFatalities === Infinity) minFatalities = 0;
-    
-    // REGIONAL IMPACT (retains logic for KPI box)
-    let regionalImpactRatio = null;
-    let totalRegionalFatalities = 0;
-    let actorRegion = maxFatalityEvent ? maxFatalityEvent.region : null; 
-
-    if (actorRegion) {
-        const allRegionalEvents = RAW.filter(d => d.region === actorRegion);
-        totalRegionalFatalities = d3.sum(allRegionalEvents, d => d.best);
-        
-        if (totalRegionalFatalities > 0) {
-            regionalImpactRatio = totalFatalities / totalRegionalFatalities;
-        }
-    }
-
-    // === MAX FATALITY DISPLAY LOGIC (UPDATED) ===
-    const dataPointsForChart4 = [
-        maxFatalityEvent ? (maxFatalityEvent.side_a === a1 ? maxFatalityEvent.deathsA : maxFatalityEvent.deathsB) : 0, 
-        maxFatalityEvent ? (maxFatalityEvent.side_a === a1 ? maxFatalityEvent.deathsB : maxFatalityEvent.deathsA) : 0, 
-        maxFatalityEvent ? maxFatalityEvent.deathsCivilians : 0,
-        maxFatalityEvent ? maxFatalityEvent.deathsUnknown : 0
-    ];
-    const activeFatalSegments = dataPointsForChart4.filter(d => d > 0).length;
-    const shouldHideChart4 = (activeFatalSegments <= 1 || !maxFatalityEvent || maxFatalities <= 0); 
-    
-    let maxEventInfoText = maxFatalityEvent ? 
-        `${maxFatalityEvent.country} (${maxFatalityEvent.year}), ${TYPE_MAPPING[maxFatalityEvent.type_of_violence] || `Type ${maxFatalityEvent.type_of_violence}`}` : "N/A";
-    
-    let maxFatalitiesDisplay = maxFatalityEvent ? maxFatalities.toLocaleString() : "N/A";
-
-    if (activeFatalSegments === 1 && maxFatalityEvent) {
-        const primarySegmentIndex = dataPointsForChart4.findIndex(d => d > 0);
-        let segmentName = "";
-        if (primarySegmentIndex === 0) segmentName = a1;
-        else if (primarySegmentIndex === 1) segmentName = opponentName;
-        else if (primarySegmentIndex === 2) segmentName = "Civilians";
-        else if (primarySegmentIndex === 3) segmentName = "Unknown";
-        
-        if (segmentName) {
-            maxFatalitiesDisplay = `${maxFatalities.toLocaleString()} (${segmentName})`;
-        }
-    }
-
-
-    // Min KPI
-    const minEventInfo = minFatalityEvent && minFatalities > 0 ? 
-        `${minFatalityEvent.country} (${minFatalityEvent.year}), ${TYPE_MAPPING[minFatalityEvent.type_of_violence] || `Type ${minFatalityEvent.type_of_violence}`}` : "N/A";
-
-
-    // Chart 2 visibility logic
-    const shouldHideChart2 = filteredData.length <= 1;
-
-    // Regional Impact KPI visibility logic
-    const regionalImpactThreshold = 0.0001;
-    const shouldHideChart3 = (regionalImpactRatio === null || totalFatalities === 0 || regionalImpactRatio < regionalImpactThreshold);
-
-
-    // === RENDER DASHBOARD CONTENT ===
-    let dashboardContentHTML = ``; 
-
-    // 1. Fatality Timeline Breakdown 
-    dashboardContentHTML += `<div class="chart-fullwidth chart-cell">
-        <h3>1. Fatality Timeline Breakdown (Stacked Area/Bar)</h3>
-        <p>Timeline chart showing the number of fatalities over the years. If filtered to a single year, the chart displays a single Bar Chart.</p>
-        <div id="chart-detailed-timeline"></div>
-    </div>`;
-    
-    // 2. Event Risk and Data Quality 
-    if (!shouldHideChart2) {
-        dashboardContentHTML += `<div class="chart-fullwidth chart-cell">
-            <h3>2. Event Risk and Data Quality (Bubble Chart)</h3>
-            <p>Analysis of risk (Fatalities) and data quality (Precision). Bubble size is proportional to Fatalities.</p>
-            <div id="chart-detailed-risk-precision"></div>
-        </div>`;
-    }
-
-    // 4. Analysis of Most Fatal Event
-    if (!shouldHideChart4) {
-        dashboardContentHTML += `<div class="chart-fullwidth chart-cell" id="chart-container-fatal">
-            <h3>4. Analysis of Most Fatal Event (Stacked Bar)</h3>
-            <p>Fatality distribution (Actor 1, Opponent, Civilian, Unknown) in the single most fatal event (Event ID: ${maxFatalityEvent ? maxFatalityEvent.id : "N/A"}).</p>
-            <div id="chart-detailed-most-fatal-event"></div>
-        </div>`;
-    }
-    
-
-    document.getElementById("dashboard").innerHTML = `
-        <div class="chart-cell">
-            <h2>${title}</h2>
-            <div class="kpi-container">
-                <div class="kpi-box"><div class="kpi-title">Total Events</div><div class="kpi-value">${totalEvents.toLocaleString()}</div></div>
-                <div class="kpi-box"><div class="kpi-title">Total Fatalities (Best Estimate)</div><div class="kpi-value">${totalFatalities.toLocaleString()}</div></div>
-                <div class="kpi-box"><div class="kpi-title">Fatalities ${a1}</div><div class="kpi-value" style="color: ${DETAILED_FATALITY_COLORS.range[0]};">${totalActor1Deaths.toLocaleString()}</div></div>
-                <div class="kpi-box"><div class="kpi-title">Fatalities ${opponentName}</div><div class="kpi-value" style="color: ${DETAILED_FATALITY_COLORS.range[1]};">${totalOpponentDeaths.toLocaleString()}</div></div>
-                <div class="kpi-box"><div class="kpi-title">Civilian Fatalities</div><div class="kpi-value" style="color: ${DETAILED_FATALITY_COLORS.range[2]};">${totalCivilians.toLocaleString()}</div></div>
-                <div class="kpi-box"><div class="kpi-title">Unknown Fatalities</div><div class="kpi-value" style="color: ${DETAILED_FATALITY_COLORS.range[3]};">${totalUnknown.toLocaleString()}</div></div>
-                <div class="kpi-box">
-                    <div class="kpi-title">Max Event Fatalities</div>
-                    <div class="kpi-value" style="color: #d9534f;">${maxFatalitiesDisplay}</div>
-                    <div class="kpi-sub-title">${maxEventInfoText}</div>
-                </div>
-                <div class="kpi-box"><div class="kpi-title">Min Event Fatalities (>0)</div><div class="kpi-value" style="color: #5cb85c;">${minFatalities > 0 ? minFatalities.toLocaleString() : "N/A"}</div><div class="kpi-sub-title">${minEventInfo}</div></div>
-                <div class="kpi-box" id="kpi-regional-impact">
-                    <div class="kpi-title">Regional Impact (${actorRegion || 'N/A'})</div>
-                    <div class="kpi-value" style="color: ${regionalImpactRatio !== null && regionalImpactRatio > 0.05 ? '#d9534f' : '#0275d8'};">
-                        ${regionalImpactRatio !== null ? d3.format(".2%")(regionalImpactRatio) : "N/A"}
-                    </div>
-                    <div class="kpi-sub-title">Total Reg. Fatalities: ${totalRegionalFatalities.toLocaleString()}</div>
-                </div>
-            </div>
-        </div>
-        ${dashboardContentHTML}
-    `;
-
-    if (shouldHideChart3) {
-        document.getElementById('kpi-regional-impact').style.display = 'none';
-    }
-
-
-    // 1. Timeline Data Aggregation
-    const breakdownData = Array.from(
-        d3.rollups(filteredData, 
-            v => {
-                let actor1 = 0; let opponent = 0;
-                v.forEach(d => {
-                     if (d.side_a === a1) { actor1 += d.deathsA; if (a2 === "All" || d.side_b === a2) opponent += d.deathsB; } 
-                     else if (d.side_b === a1) { actor1 += d.deathsB; if (a2 === "All" || d.side_a === a2) opponent += d.deathsA; }
-                });
-                return { actor1: actor1, opponent: opponent, civilians: d3.sum(v, d => d.deathsCivilians), unknown: d3.sum(v, d => d.deathsUnknown) }
-            },
-            d => d.year
-        ),
-        ([year, sums]) => [
-            { year: +year, type: a1, deaths: sums.actor1 },
-            { year: +year, type: opponentName, deaths: sums.opponent },
-            { year: +year, type: "Civilians", deaths: sums.civilians },
-            { year: +year, type: "Unknown", deaths: sums.unknown }
-        ]
-    ).flat().filter(d => d.deaths > 0);
-
-    const uniqueYears = new Set(breakdownData.map(d => d.year)).size;
-    const markType = uniqueYears > 1 ? "area" : "bar";
-    
-    // Render Chart 1
-    renderDetailed_Combined(breakdownData, colorDomain, markType);
-
-    // Render Chart 2 (if visible)
-    if (!shouldHideChart2) {
-        const riskPrecisionData = filteredData.map(d => ({
-            year: d.year, best: d.best, where_prec: d.where_prec,
-            type_of_violence: TYPE_MAPPING[d.type_of_violence] || `Unknown (${d.type_of_violence})`, id: d.id
-        }));
-        renderDetailed_RiskPrecision(riskPrecisionData); 
-    }
-        
-    // Render Chart 4 (if visible)
-    if (!shouldHideChart4 && maxFatalities > 0) {
-        renderDetailed_MostFatalEvent(maxFatalityEvent, null, a1, opponentName, colorDomain);
-    }
-}
-
-
-/* ==================================================================== */
-/* =========== 5. CHART RENDER FUNCTIONS (GLOBAL) (UPDATED) ======== */
-/* ==================================================================== */
-
-// Dynamic Breakdown Chart (Chart 2)
-function renderGlobal_Breakdown(data, groupingField, domain, range) {
-    const spec = {
-        $schema: "https://vega.github.io/schema/vega-lite/v5.json",
-        width: fixedChartWidth, 
-        height: fullWidthHeight, 
-        data: { values: data },
-        mark: { type: "area", tooltip: true },
-        encoding: {
-            x: { field: "year", type: "temporal", title: "Year", axis: {format: "%Y"} },
-            y: { field: "total_deaths", type: "quantitative", title: "Proportion (%)", stack: "normalize", axis: { format: ".1%" }},
-            color: {
-                field: "category", 
-                type: "nominal", 
-                title: groupingField === "region" ? "Region" : "Violence Type", 
-                scale: {
-                    domain: domain, 
-                    range: range
-                }
-            },
-            tooltip: [
-                { field: "year", type: "temporal", format: "%Y", title: "Year" },
-                { field: "category", type: "nominal", title: groupingField === "region" ? "Region" : "Violence Type" },
-                { field: "total_deaths", type: "quantitative", title: "Fatalities", format: "," },
-                { field: "total_deaths", type: "quantitative", title: "Proportion", stack: "normalize", format: ".1%" }
-            ]
-        }
-    };
-    data.forEach(d => { d.year = new Date(d.year, 0, 1); });
-    vegaEmbed("#chart-global-death-breakdown", spec, { actions: false }).catch(console.error);
-}
-
-// Waffle Chart (Chart 7)
-function renderGlobal_ViolenceTypeWaffleChart(data) { 
-    const totalEvents = d3.sum(data, d => d.event_count);
-    if (totalEvents === 0) {
-        document.getElementById("chart-global-regional-waffle").innerHTML = "<p>No events to display.</p>";
-        return;
-    }
-
-    const totalUnits = 100;
-    let accumulatedData = [];
-    
-    const sortedData = data.sort((a, b) => b.event_count - a.event_count);
-
-    const unitMap = sortedData.map(s => {
-        return {
-            type_label: s.type_label,
-            event_count: s.event_count,
-            units: Math.floor((s.event_count / totalEvents) * totalUnits),
-            remainder: (s.event_count / totalEvents) * totalUnits - Math.floor((s.event_count / totalEvents) * totalUnits)
-        };
-    });
-
-    let assignedUnits = d3.sum(unitMap, d => d.units);
-    let remainderUnits = totalUnits - assignedUnits;
-
-    const sortedByRemainder = [...unitMap].sort((a, b) => b.remainder - a.remainder);
-    for (let i = 0; i < remainderUnits; i++) {
-        if (sortedByRemainder[i]) {
-            sortedByRemainder[i].units += 1;
-        }
-    }
-
-    let currentUnit = 0;
-    let dynamicDomain = [];
-    let dynamicRange = [];
-
-    unitMap.forEach(s => {
-        if (s.units > 0) {
-            const colorIndex = GLOBAL_TYPE_COLORS.domain.indexOf(s.type_label);
-            const color = colorIndex !== -1 ? GLOBAL_TYPE_COLORS.range[colorIndex] : "#999999";
-
-            dynamicDomain.push(s.type_label);
-            dynamicRange.push(color);
-
-            for (let j = 0; j < s.units; j++) {
-                accumulatedData.push({
-                    type_label: s.type_label,
-                    event_count: s.event_count,
-                    unit: currentUnit + j + 1,
-                    row: Math.floor((currentUnit + j) / 10),
-                    col: (currentUnit + j) % 10,
-                    percentage_label: `${(s.event_count / totalEvents * 100).toFixed(1)}%`
-                });
-            }
-            currentUnit += s.units;
-        }
-    });
-
-    while (accumulatedData.length < totalUnits) {
-        if (dynamicDomain.indexOf("Rounding Error") === -1) {
-             dynamicDomain.push("Rounding Error");
-             dynamicRange.push("#E0E0E0");
-        }
-        accumulatedData.push({
-            type_label: "Rounding Error",
-            event_count: 0,
-            unit: accumulatedData.length + 1,
-            row: Math.floor(accumulatedData.length / 10),
-            col: accumulatedData.length % 10,
-            percentage_label: "0%"
-        });
-    }
-
-    const spec = {
-        $schema: "https://vega.github.io/schema/vega-lite/v5.json",
-        width: 300, 
-        height: 300, 
-        data: { values: accumulatedData },
-        mark: { type: "rect", stroke: "white", strokeWidth: 1, tooltip: true },
-        encoding: {
-            x: { field: "col", type: "ordinal", axis: null, title: null, sort: "ascending" },
-            y: { field: "row", type: "ordinal", axis: null, title: null, sort: "descending" },
-            color: {
-                field: "type_label",
-                type: "nominal",
-                title: "Violence Type",
-                scale: { domain: dynamicDomain, range: dynamicRange },
-                legend: {
-                    symbolType: "square",
-                    title: "Contribution by Type"
-                }
-            },
-            tooltip: [
-                { field: "type_label", title: "Violence Type" },
-                { field: "event_count", title: "Total Event Count", aggregate: "sum", format: "," },
-                { field: "percentage_label", title: "Percentage" }
-            ]
-        }
-    };
-    vegaEmbed("#chart-global-regional-waffle", spec, { actions: false }).catch(console.error);
-}
-
-// Heatmap Count (Chart 4)
-function renderGlobal_HeatmapCount(data) {
-    const spec = {
-        $schema: "https://vega.github.io/schema/vega-lite/v5.json",
-        width: fixedChartWidth, 
-        height: fullWidthHeight, 
-        data: { values: data },
-        title: "Event Density by Year and Region",
-        mark: { type: "rect", tooltip: true },
-        encoding: {
-            x: { field: "year", type: "ordinal", title: "Year", axis: {labelAngle: -45} },
-            y: { field: "region", type: "nominal", title: "Region" },
-            color: { 
-                field: "event_count", type: "quantitative", title: "Event Count", 
-                scale: { scheme: "viridis" } 
-            },
-            tooltip: [
-                { field: "year", title: "Year" },
-                { field: "region", title: "Region" },
-                { field: "event_count", title: "Event Count", format: "," }
-            ]
-        }
-    };
-    vegaEmbed("#chart-global-heatmap-count", spec, { actions: false }).catch(console.error);
-}
-
-// Heatmap Quality (Chart 5)
-function renderGlobal_HeatmapQuality(data) {
-    const spec = {
-        $schema: "https://vega.github.io/schema/vega-lite/v5.json",
-        width: fixedChartWidth, 
-        height: fullWidthHeight, 
-        data: { values: data },
-        title: "Data Quality: Location Precision (1=High)",
-        mark: { type: "rect", tooltip: true },
-        encoding: {
-            x: { field: "year", type: "ordinal", title: "Year", axis: {labelAngle: -45} },
-            y: { field: "where_prec", type: "ordinal", title: "Location Precision (1=High)" },
-            color: { 
-                field: "event_count", type: "quantitative", title: "Event Count", 
-                scale: { scheme: "cividis" } 
-            },
-            tooltip: [
-                { field: "year", title: "Year" },
-                { field: "where_prec", title: "Precision" },
-                { field: "event_count", title: "Event Count", format: "," }
-            ]
-        }
-    };
-    vegaEmbed("#chart-global-heatmap-quality", spec, { actions: false }).catch(console.error);
-}
-
-// Small Multiples (Chart 8)
-function renderGlobal_SmallMultiples(data) {
-    data.forEach(d => { d.year = new Date(d.year, 0, 1); });
-
-    const spec = {
-        $schema: "https://vega.github.io/schema/vega-lite/v5.json",
-        width: fixedChartWidth, 
-        height: smallMultiplesHeight, 
-        data: { values: data },
-        mark: { type: "line", point: true, tooltip: true },
-        encoding: {
-            x: { field: "year", type: "temporal", title: "Year", axis: { format: "%Y", labels: true, labelOverlap: "greedy" } },
-            y: { 
-                field: "total_fatalities", 
-                type: "quantitative", 
-                title: "Total Fatalities" 
-            },
-            color: { field: "region", type: "nominal", title: "Region" },
-            facet: { 
-                row: { 
-                    field: "region", type: "nominal", title: null, 
-                    header: { labelOrient: "top", titleOrient: "top" } 
-                }
-            },
-            tooltip: [
-                { field: "year", title: "Year", type: "temporal", format: "%Y" },
-                { field: "region", title: "Region" },
-                { field: "total_fatalities", title: "Fatalities", format: "," }
-            ]
-        },
-        resolve: { 
-            scale: { y: "independent" }
-        }
-    };
-    vegaEmbed("#chart-global-small-multiples", spec, { actions: false }).catch(console.error);
-}
-
-// Stacked Bar (Chart 6)
-function renderGlobal_StackedBar(data) {
-    const countryOrder = Array.from(d3.rollups(data, v => d3.sum(v, d => d.total), d => d.country))
-        .sort((a,b) => b[1] - a[1])
-        .map(d => d[0]);
-
-    const spec = {
-        $schema: "https://vega.github.io/schema/vega-lite/v5.json",
-        width: fixedChartWidth, 
-        height: barChartHeight, 
-        data: { values: data },
-        mark: { type: "bar", tooltip: true },
-        encoding: {
-            y: { field: "country", type: "nominal", sort: countryOrder, title: "Country (Top 15)", axis: { labelOverlap: "greedy" }},
-            x: { field: "total", type: "quantitative", title: "Total Fatalities" },
-            color: { 
-                field: "type_of_violence", type: "nominal", title: "Violence Type",
-                scale: GLOBAL_TYPE_COLORS
-            },
-            tooltip: [
-                { field: "country", title: "Country" },
-                { field: "type_of_violence", title: "Type" },
-                { field: "total", title: "Fatalities", format: "," }
-            ]
-        }
-    };
-    vegaEmbed("#chart-global-stacked-bar", spec, { actions: false }).catch(console.error);
-}
-
-/* ==================================================================== */
-/* =========== 6. CHART RENDER FUNCTIONS (DETAILED) (REDUCED) ==== */
-/* ==================================================================== */
-
-function renderDetailed_Combined(data, colorDomain, markType) {
-    const spec = {
-        $schema: "https://vega.github.io/schema/vega-lite/v5.json",
-        width: fixedChartWidth,
-        height: fullWidthHeight, 
-        data: { values: data },
-        encoding: {
-            color: { 
-                field: "type", type: "nominal", title: "Victim Type",
-                scale: {
-                    domain: colorDomain,
-                    range: DETAILED_FATALITY_COLORS.range
-                }
-            }
-        }
-    };
-
-    if (markType === "area") {
-        data.forEach(d => { d.year = new Date(d.year, 0, 1); });
-        spec.mark = { type: "area", tooltip: true };
-        spec.encoding.x = { 
-            field: "year", 
-            type: "temporal",
-            title: "Year",
-            axis: { format: "%Y", labelOverlap: "greedy", tickCount: "year" } 
-        };
-        spec.encoding.y = { 
-            field: "deaths", 
-            type: "quantitative", 
-            title: "Fatalities",
-            stack: "zero"
-        };
-        spec.encoding.tooltip = [
-            { field: "year", title: "Year", type: "temporal", format: "%Y" },
-            { field: "type", title: "Victim Type" },
-            { field: "deaths", title: "Fatalities", format: "," }
-        ];
-    } else {
-        spec.mark = { type: "bar", tooltip: true };
-        spec.encoding.x = { 
-            field: "deaths", 
-            type: "quantitative", 
-            title: "Fatalities" 
-        };
-        spec.encoding.y = { 
-            field: "type", 
-            type: "nominal", 
-            title: "Victim Type",
-            sort: "-x"
-        };
-        spec.encoding.tooltip = [
-            { field: "type", title: "Victim Type" },
-            { field: "deaths", title: "Fatalities", format: "," }
-        ];
-    }
-
-    vegaEmbed("#chart-detailed-timeline", spec, { actions: false }).catch(console.error);
-}
-
-function renderDetailed_RiskPrecision(data) {
-    const spec = {
-        $schema: "https://vega.github.io/schema/vega-lite/v5.json",
-        width: fixedChartWidth,
-        height: fullWidthHeight, 
-        data: { values: data.filter(d => d.best > 0) },
-        mark: { type: "circle", tooltip: true, opacity: 0.7 },
-        encoding: {
-            x: { 
-                field: "where_prec", 
-                type: "ordinal", 
-                title: "Location Precision (1=Best, 7=Worst)",
-                sort: "ascending" 
-            },
-            y: { 
-                field: "best", 
-                type: "quantitative", 
-                title: "Total Fatalities (Best Estimate)",
-            },
-            size: {
-                field: "best",
-                type: "quantitative",
-                title: "Fatalities",
-                scale: { range: [100, 1000] },
-                legend: null
-            },
-            color: {
-                field: "type_of_violence",
-                type: "nominal",
-                title: "Violence Type",
-                scale: GLOBAL_TYPE_COLORS
-            },
-            tooltip: [
-                { field: "id", title: "Event ID" },
-                { field: "best", title: "Fatalities", format: "," },
-                { field: "where_prec", title: "Precision" },
-                { field: "type_of_violence", title: "Type" },
-                { field: "year", title: "Year" }
-            ]
-        }
-    };
-    vegaEmbed("#chart-detailed-risk-precision", spec, { actions: false }).catch(console.error);
-}
-
-function renderDetailed_MostFatalEvent(maxFatalityEvent, maxOpponentFatalities, actor1Name, opponentName, colorDomain) {
-    
-    if (!maxFatalityEvent) return;
-
-    let chartData = [];
-    
-    const actorDeaths = (maxFatalityEvent.side_a === actor1Name ? maxFatalityEvent.deathsA : maxFatalityEvent.deathsB);
-    const opponentDeaths = (maxFatalityEvent.side_a === actor1Name ? maxFatalityEvent.deathsB : maxFatalityEvent.deathsA);
-    const civilianDeaths = maxFatalityEvent.deathsCivilians;
-    const unknownDeaths = maxFatalityEvent.deathsUnknown;
-
-    const dataPoints = [
-        { event: "Highest Fatalities Event", eventId: maxFatalityEvent.id, type: actor1Name, deaths: actorDeaths },
-        { event: "Highest Fatalities Event", eventId: maxFatalityEvent.id, type: opponentName, deaths: opponentDeaths },
-        { event: "Highest Fatalities Event", eventId: maxFatalityEvent.id, type: "Civilians", deaths: civilianDeaths },
-        { event: "Highest Fatalities Event", eventId: maxFatalityEvent.id, type: "Unknown", deaths: unknownDeaths }
-    ];
-
-    chartData = dataPoints.filter(d => d.deaths > 0);
-    
-    const maxEventInfo = maxFatalityEvent ? 
-        `<strong>Event ID ${maxFatalityEvent.id || 'undefined'}</strong> in ${maxFatalityEvent.country} (${maxFatalityEvent.year}) with <strong>${maxFatalityEvent.best.toLocaleString()}</strong> total deaths.` : "N/A";
-    
-    document.getElementById("chart-detailed-most-fatal-event").innerHTML = `<p>${maxEventInfo}</p><div id="most-fatal-chart-container"></div>`;
-
-    const spec = {
-        $schema: "https://vega.github.io/schema/vega-lite/v5.json",
-        width: fixedChartWidth * 0.8,
-        height: 100, 
-        data: { values: chartData },
-        mark: { type: "bar", tooltip: true },
-        encoding: {
-            x: { 
-                field: "deaths", 
-                type: "quantitative", 
-                title: "Fatalities",
-                stack: "zero" 
-            },
-            y: { 
-                field: "event", 
-                type: "nominal", 
-                title: null,
-                axis: null 
-            },
-            color: {
-                field: "type", type: "nominal", title: "Victim Type",
-                scale: {
-                    domain: colorDomain,
-                    range: DETAILED_FATALITY_COLORS.range
-                }
-            },
-            tooltip: [
-                { field: "eventId", title: "Event ID" },
-                { field: "type", title: "Victim Type" },
-                { field: "deaths", title: "Fatalities", format: "," }
-            ]
-        },
-        config: {
-            view: { stroke: null }
-        }
-    };
-    vegaEmbed("#most-fatal-chart-container", spec, { actions: false }).catch(console.error);
-}
+// --- MAIN INITIALIZATION (Load CSV Data) ---
+document.addEventListener('DOMContentLoaded', function() {
+    d3.csv(CSV_FILE_PATH)
+        .then(rawData => {
+            rawProcessedData = processRawData(rawData);
+
+            if (rawProcessedData.length === 0) {
+                 console.error("No valid data found (best > 0) in CSV.");
+                 d3.select("#totalCasualties").text("No Data");
+                 d3.select("#chart-tabs").style("display", "none"); 
+                 return;
+            }
+
+            const totalCasualties = d3.sum(rawProcessedData, d => d.best);
+            const totalEvents = rawProcessedData.length;
+            d3.select("#totalCasualties").text(d3.format(",")(totalCasualties));
+            d3.select("#totalEvents").text(d3.format(",")(totalEvents));
+
+            // 1. Create default legend 
+            activeRegions = Object.keys(REGION_COLORS);
+            createLegend(REGION_COLORS);
+
+            // 2. Set up tab switching events
+            d3.selectAll(".tab-button").on("click", function() {
+                const chartId = d3.select(this).attr("data-chart");
+                switchChart(chartId);
+            });
+
+            // 3. Draw default chart (Chart 3)
+            switchChart('chart3');
+        })
+        .catch(error => {
+            console.error(`ERROR: Could not load CSV file from path: ${CSV_FILE_PATH}. Please ensure the file is unzipped and in the same directory.`, error);
+            d3.select("#totalCasualties").text("CSV LOAD ERROR");
+        });
+});

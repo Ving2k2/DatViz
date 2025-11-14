@@ -1,41 +1,106 @@
-body { 
-    font-family: sans-serif; 
-    background-color: #f4f4f4; 
-    margin: 0; 
-    padding: 20px; 
-}
-h1 { 
-    text-align: center; 
-}
-.filters { 
-    display: flex; 
-    gap: 15px; 
-    justify-content: center; 
-    padding: 20px; 
-    background: #fff; 
-    border-radius: 8px; 
-    box-shadow: 0 2px 5px rgba(0,0,0,0.1); 
-    margin-bottom: 20px; 
-    flex-wrap: wrap; 
-}
-.filters div {
-    display: flex;
-    flex-direction: column;
-}
-.filters label { 
-    font-weight: bold; 
-    font-size: 0.85em;
-    margin-bottom: 5px;
-}
-.filters select {
-    min-width: 200px;
-    padding: 5px;
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background-color: #f4f7f9;
+    color: #333;
 }
 
-#dashboard { 
-    display: flex; 
-    flex-direction: column; 
-    gap: 20px; 
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+    background-color: #fff;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.main-title {
+    text-align: center;
+    color: #1f77b4;
+    margin-bottom: 20px;
+}
+
+/* --- Tab Navigation --- */
+.tabs-container {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    margin-bottom: 20px;
+}
+
+.tab-button {
+    padding: 10px 15px;
+    border: 1px solid #ccc;
+    background-color: #f9f9f9;
+    cursor: pointer;
+    border-radius: 5px;
+    transition: background-color 0.3s, border-color 0.3s;
+}
+
+.tab-button:hover {
+    background-color: #eee;
+}
+
+.tab-button.active {
+    background-color: #1f77b4;
+    color: white;
+    border-color: #1f77b4;
+    font-weight: bold;
+}
+
+/* --- Controls and Info --- */
+.controls-panel {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 2px solid #eee;
+    margin-bottom: 20px;
+}
+
+.info-text {
+    font-size: 14px;
+    color: #555;
+}
+
+.info-value {
+    font-weight: bold;
+    color: #333;
+}
+
+/* --- Legend --- */
+.legend-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 15px;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    font-size: 12px;
+    opacity: 0.5; /* Mặc định mờ */
+    transition: opacity 0.2s;
+}
+
+.legend-item.active {
+    opacity: 1; /* Hiển thị rõ khi active */
+}
+
+.legend-color {
+    width: 12px;
+    height: 12px;
+    margin-right: 5px;
+    border-radius: 3px;
+    border: 1px solid #777;
+}
+
+/* --- Main Content Area (Chart + Detail) --- */
+.main-content-area {
+    display: flex;
+    gap: 20px;
 }
 
 /* --- Layouts for Charts (Fixed Width Support) --- */
@@ -46,54 +111,73 @@ h1 {
     grid-template-columns: 1fr; 
 }
 
-.chart-cell { 
-    background: #fff; 
-    border-radius: 8px; 
-    box-shadow: 0 2px 5px rgba(0,0,0,0.1); 
-    padding: 20px; 
-    /* IMPORTANT: Allows fixed 1000px charts to render fully and scroll if viewport is smaller */
-    overflow-x: auto; 
+.chart-title {
+    font-size: 16px;
+    font-weight: bold;
 }
 
-h2 { 
-    font-size: 1.3em; 
-    margin-top: 0; 
-    border-bottom: 1px solid #eee; 
-    padding-bottom: 10px; 
-}
-h3 {
-    margin-top: 0;
-}
-p {
-    font-size: 0.9em;
-    color: #555;
-    margin-top: -10px;
-}
-
-/* --- CSS for Detailed KPIs and Event Analysis --- */
-.kpi-container {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 15px;
-    margin-bottom: 20px;
-}
-.kpi-box {
-    background-color: #f9f9f9;
-    border-radius: 8px;
+/* --- Detail Panel --- */
+.detail-panel {
+    width: 450px; /* Tăng chiều rộng để chứa 2 biểu đồ mini */
     padding: 15px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    background-color: #fcfcfc;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.panel-title {
+    font-size: 16px;
+    color: #1f77b4;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 10px;
+    margin-top: 0;
+    margin-bottom: 10px;
     text-align: center;
+}
+
+.detail-content-wrapper {
+    display: flex;
+    flex-direction: column; /* Xếp dọc các cột */
+    gap: 15px;
+}
+
+.detail-info-column {
+    padding-bottom: 10px;
+    border-bottom: 1px dashed #ddd;
+}
+
+.detail-name {
+    font-size: 18px;
+    font-weight: bold;
+    color: #d62728;
+    margin: 0 0 5px 0;
+}
+
+.initial-msg {
+    color: #777;
+    font-style: italic;
+    text-align: center;
+    padding: 50px 0;
+}
+
+/* Detail Charts Styling */
+.detail-chart-column {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.detail-chart-column svg {
     border: 1px solid #eee;
-    /* Override fixed grid for KPI styling */
-    min-width: 0 !important; 
-    overflow-x: hidden !important;
+    border-radius: 4px;
+    background-color: #fff;
 }
-.kpi-title {
-    font-weight: bold;
-    font-size: 0.9em;
-    color: #555;
+
+.detail-chart-column .axis text {
+    font-size: 10px;
 }
-.kpi-value {
-    font-size: 1.8em;
-    font-weight: bold;
-    color: #333;
+
+.detail-chart-column .domain {
+    stroke: #aaa;
 }

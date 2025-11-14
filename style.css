@@ -40,6 +40,7 @@ h1 {
 
 /* --- Layouts for Charts (Fixed Width Support) --- */
 .chart-row-1 { 
+    
     display: grid; 
     gap: 20px; 
     grid-template-columns: 1fr; 

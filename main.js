@@ -7,6 +7,7 @@ const CSV_PATH = "GEDEvent_v25_1.csv";
 
 // Map numerical codes to names
 const TYPE_MAPPING = {
+    
     "1": "State-based",
     "2": "Non-state",
     "3": "One-sided"

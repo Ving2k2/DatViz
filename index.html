@@ -3,46 +3,52 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>UCDP GED Scenario Dashboard | CSC_51052</title>
+    <title>Global Conflict Analysis (D3.js)</title>
 
     <link rel="stylesheet" href="style.css">
-
     <script src="https://d3js.org/d3.v7.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
-    <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
-    <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
-
-    <script src="main.js" defer></script>
 </head>
 <body>
 
-    <h1>Global Event Dataset Dashboard</h1>
-
-    <div class="filters">
-        <div>
-            <label for="regionSelect">Region:</label>
-            <select id="regionSelect"></select>
-        </div>
-
-        <div>
-            <label for="actor1Select">Actor 1:</label>
-            <select id="actor1Select" disabled></select>
-        </div>
-        <div>
-            <label for="actor2Select">Opponent (Actor 2):</label>
-            <select id="actor2Select" disabled></select>
-        </div>
-        <div>
-            <label for="yearSelect">Year:</label>
-            <select id="yearSelect" disabled></select>
-        </div>
-        <div>
-            <label for="typeSelect">Violence Type:</label>
-            <select id="typeSelect" disabled></select>
-        </div>
+<div class="container">
+    <h1 class="main-title">Global Conflict Analysis (UCDP GED Data)</h1>
+    
+    <div id="chart-tabs" class="tabs-container">
+        <button data-chart="chart1" class="tab-button active">1. Summary by Country</button>
+        <button data-chart="chart2" class="tab-button">2. Breakdown by Violence Type</button>
+        <button data-chart="chart3" class="tab-button">3. Casualty Trends Over Time (Line)</button>
+        <button data-chart="chart4" class="tab-button">4. Top 15 Countries & Violence Types</button>
     </div>
 
-    <div id="dashboard"></div>
+    <div class="controls-panel">
+        <div class="info-text">
+            Total Events (BEST > 0): <span id="totalEvents" class="info-value">...</span>
+            | Total Casualties (BEST): <span id="totalCasualties" class="info-value">...</span>
+        </div>
+
+        <div id="legend" class="legend-container"></div>
+    </div>
+
+    <div class="main-content-area">
+        <div class="chart-container">
+            <svg id="d3-chart"></svg>
+        </div>
+
+        <div id="detail-panel" class="detail-panel">
+            <h2 class="panel-title">Detailed Information</h2>
+
+            <div id="detail-content" class="detail-content-wrapper">
+                <div class="detail-info-column">
+                    <p class="initial-msg">Hover over a bubble to see detailed information.</p>
+                </div>
+
+                <div class="detail-chart-column"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="main.js" defer></script>
 
 </body>
 </html>
